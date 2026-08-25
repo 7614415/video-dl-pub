@@ -1,0 +1,215 @@
+name: Drive folder -> audio (MP3)
+
+on:
+  workflow_dispatch:
+    inputs:
+      folder_id:
+        description: "Drive folder id to convert"
+        required: true
+        default: "1FTVVZpK8yXsBITw8mu4J25Jt_uW0LIm1"
+      audio_subfolder:
+        description: "Name of the audio subfolder created inside it"
+        required: false
+        default: "שמע"
+      bitrate:
+        description: "MP3 bitrate"
+        required: false
+        default: "64k"
+      limit:
+        description: "Max files per run"
+        required: false
+        default: "40"
+      recursive:
+        description: "Also scan sub-folders (yes/no)"
+        required: false
+        default: "no"
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.scan.outputs.matrix }}
+      count: ${{ steps.scan.outputs.count }}
+      audio_folder: ${{ steps.scan.outputs.audio_folder }}
+    steps:
+      - id: scan
+        env:
+          CID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          RTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          FOLDER: ${{ github.event.inputs.folder_id }}
+          SUB: ${{ github.event.inputs.audio_subfolder }}
+          LIMIT: ${{ github.event.inputs.limit }}
+          RECURSIVE: ${{ github.event.inputs.recursive }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+
+          CID, CSEC, RTOK = os.environ["CID"], os.environ["CSEC"], os.environ["RTOK"]
+          FOLDER, SUB = os.environ["FOLDER"], os.environ["SUB"]
+          LIMIT = int(os.environ.get("LIMIT") or 40)
+          RECURSIVE = (os.environ.get("RECURSIVE") or "no").lower() == "yes"
+
+          def token():
+              body = urllib.parse.urlencode({
+                  "client_id": CID, "client_secret": CSEC,
+                  "refresh_token": RTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          T = token()
+
+          def api(url):
+              return json.load(urllib.request.urlopen(
+                  urllib.request.Request(url, headers={"Authorization": "Bearer " + T}), timeout=120))
+
+          def children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'" + fid + "' in parents and trashed=false")
+                       + "&fields=files(id,name,mimeType,size),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = api(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          FOLDER_MIME = "application/vnd.google-apps.folder"
+
+          top = children(FOLDER)
+          audio = next((f for f in top if f["mimeType"] == FOLDER_MIME and f["name"] == SUB), None)
+          if audio:
+              audio_id = audio["id"]
+              print("audio folder exists:", audio_id)
+          else:
+              body = json.dumps({"name": SUB, "mimeType": FOLDER_MIME, "parents": [FOLDER]}).encode()
+              req = urllib.request.Request("https://www.googleapis.com/drive/v3/files", body,
+                                           {"Authorization": "Bearer " + T,
+                                            "Content-Type": "application/json"})
+              audio_id = json.load(urllib.request.urlopen(req, timeout=60))["id"]
+              print("audio folder created:", audio_id)
+
+          have = set(f["name"] for f in children(audio_id))
+
+          VIDEO_EXT = (".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".ts")
+          vids = []
+
+          def collect(items):
+              for f in items:
+                  if f["mimeType"] == FOLDER_MIME:
+                      if RECURSIVE and f["id"] != audio_id:
+                          collect(children(f["id"]))
+                      continue
+                  if f["mimeType"].startswith("video/") or f["name"].lower().endswith(VIDEO_EXT):
+                      vids.append(f)
+
+          collect(top)
+
+          todo = []
+          for v in vids:
+              out = v["name"].rsplit(".", 1)[0] + ".mp3"
+              if out in have:
+                  continue
+              todo.append({"id": v["id"], "out": out})
+
+          print("videos=%d already_audio=%d todo=%d" % (len(vids), len(have), len(todo)))
+          for t in todo:
+              print("  ->", t["out"])
+          todo = todo[:LIMIT]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("matrix=" + json.dumps({"include": todo}, ensure_ascii=False) + "\n")
+              fh.write("count=%d\n" % len(todo))
+              fh.write("audio_folder=%s\n" % audio_id)
+          PY
+
+  convert:
+    needs: list
+    if: needs.list.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 10
+      matrix: ${{ fromJson(needs.list.outputs.matrix) }}
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: convert + upload
+        env:
+          CID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          RTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          FILE_ID: ${{ matrix.id }}
+          OUT_NAME: ${{ matrix.out }}
+          AUDIO_FOLDER: ${{ needs.list.outputs.audio_folder }}
+          BITRATE: ${{ github.event.inputs.bitrate }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse, urllib.error, subprocess
+
+          CID, CSEC, RTOK = os.environ["CID"], os.environ["CSEC"], os.environ["RTOK"]
+          FILE_ID = os.environ["FILE_ID"]
+          OUT_NAME = os.environ["OUT_NAME"]
+          AUDIO_FOLDER = os.environ["AUDIO_FOLDER"]
+          BITRATE = os.environ.get("BITRATE") or "64k"
+
+          def token():
+              body = urllib.parse.urlencode({
+                  "client_id": CID, "client_secret": CSEC,
+                  "refresh_token": RTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          T = token()
+          print("downloading", FILE_ID, flush=True)
+          req = urllib.request.Request(
+              "https://www.googleapis.com/drive/v3/files/%s?alt=media" % FILE_ID,
+              headers={"Authorization": "Bearer " + T})
+          with urllib.request.urlopen(req, timeout=1800) as r, open("in.bin", "wb") as fh:
+              while True:
+                  chunk = r.read(1 << 22)
+                  if not chunk:
+                      break
+                  fh.write(chunk)
+          print("downloaded MB:", os.path.getsize("in.bin") // 1048576, flush=True)
+
+          subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", "in.bin",
+                          "-vn", "-map", "0:a:0", "-ac", "1", "-ar", "44100",
+                          "-c:a", "libmp3lame", "-b:a", BITRATE, "out.mp3"], check=True)
+          size = os.path.getsize("out.mp3")
+          print("mp3 MB:", size // 1048576, flush=True)
+          if size < 100000:
+              raise SystemExit("mp3 suspiciously small")
+
+          T = token()
+          meta = json.dumps({"name": OUT_NAME, "parents": [AUDIO_FOLDER]}).encode()
+          req = urllib.request.Request(
+              "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+              meta, {"Authorization": "Bearer " + T,
+                     "Content-Type": "application/json; charset=UTF-8",
+                     "X-Upload-Content-Type": "audio/mpeg",
+                     "X-Upload-Content-Length": str(size)})
+          sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+
+          CH = 8 << 20
+          sent = 0
+          with open("out.mp3", "rb") as fh:
+              while sent < size:
+                  data = fh.read(CH)
+                  end = sent + len(data) - 1
+                  put = urllib.request.Request(sess, data, method="PUT")
+                  put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                  try:
+                      resp = urllib.request.urlopen(put, timeout=900)
+                      print("uploaded id:", json.load(resp).get("id"), flush=True)
+                      sent = size
+                  except urllib.error.HTTPError as e:
+                      if e.code != 308:
+                          print(e.read().decode("utf-8", "replace")[:500])
+                          raise
+                      sent = end + 1
+          print("OK", OUT_NAME)
+          PY
