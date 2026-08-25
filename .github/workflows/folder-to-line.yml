@@ -1,0 +1,248 @@
+name: Drive folder -> Yemot line (3-level menu)
+# Pushes an organized Drive folder onto a Yemot extension as:
+#   EXT (menu by category) -> EXT/<c> (menu by episode) -> EXT/<c>/<e> (playfile)
+# Audio MUST be segmented 8kHz mono WAV: Yemot returns 413 for big WAVs and
+# stores MP3/OGG as BIN (they will not play). Verified 2026-08-12.
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: 'Drive folder name (already organized into subfolders)'
+        required: true
+        default: 'Vocali - יוטיוב'
+      ext:
+        description: 'Yemot extension path, e.g. 6/8/6'
+        required: true
+        default: '6/8/6'
+      title:
+        description: 'Spoken name of the collection (menu intro)'
+        required: true
+        default: 'ווקאלי'
+      limit:
+        description: 'Max episodes to push this run'
+        default: '25'
+      reset:
+        description: 'yes = discard manifest and rebuild numbering from scratch'
+        default: 'no'
+
+concurrency:
+  group: folder-to-line-${{ inputs.ext }}
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Convert and upload
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YEMOT_USER: ${{ secrets.YEMOT_USER }}
+          YEMOT_PASS: ${{ secrets.YEMOT_PASS }}
+          ROOT_NAME: ${{ inputs.folder }}
+          EXT: ${{ inputs.ext }}
+          TITLE: ${{ inputs.title }}
+          LIMIT: ${{ inputs.limit }}
+          RESET: ${{ inputs.reset }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, urllib.error as E
+          import json, os, re, sys, time, glob, subprocess
+
+          YUSER=os.environ['YEMOT_USER']; YPASS=os.environ['YEMOT_PASS']
+          ROOT_NAME=os.environ['ROOT_NAME']; EXT=os.environ['EXT'].strip('/')
+          TITLE=os.environ['TITLE']; LIMIT=int(os.environ.get('LIMIT') or 25)
+          RESET=(os.environ.get('RESET','no').lower()=='yes')
+          MANIFEST='_line_'+EXT.replace('/','_')+'.json'
+
+          # ---------- Drive ----------
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          def gtok(): return json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          GTOK=gtok()
+          def gapi(u,m='GET',b=None):
+              h={'Authorization':'Bearer '+GTOK}
+              if b is not None: h['Content-Type']='application/json'
+              return json.load(R.urlopen(R.Request(u,data=(json.dumps(b).encode() if b is not None else None),headers=h,method=m),timeout=120))
+          def qf(query,fields='files(id,name,mimeType,size)'):
+              out,pg=[],None
+              while True:
+                  u='https://www.googleapis.com/drive/v3/files?q='+P.quote(query)+'&fields=nextPageToken,'+fields+'&pageSize=1000'
+                  if pg:u+='&pageToken='+pg
+                  r=gapi(u);out+=r.get('files',[]);pg=r.get('nextPageToken')
+                  if not pg:break
+              return out
+          def dl_file(fid,dest):
+              req=R.Request('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media',
+                            headers={'Authorization':'Bearer '+GTOK})
+              with R.urlopen(req,timeout=1800) as r, open(dest,'wb') as f:
+                  while True:
+                      c=r.read(1<<20)
+                      if not c: break
+                      f.write(c)
+
+          nm=ROOT_NAME.replace('\\','\\\\').replace("'","\\'")
+          f=qf("name='"+nm+"' and mimeType='application/vnd.google-apps.folder' and trashed=false")
+          if not f: sys.stderr.write('::error::Drive folder not found: '+ROOT_NAME+'\n'); sys.exit(1)
+          root=f[0]['id']; print('Drive root:',ROOT_NAME,root,flush=True)
+
+          def put_json(fid,obj):
+              body=json.dumps(obj,ensure_ascii=False).encode()
+              bnd='----MAN'
+              if fid:
+                  meta=json.dumps({'name':MANIFEST}).encode()
+                  url='https://www.googleapis.com/upload/drive/v3/files/'+fid+'?uploadType=multipart'; m='PATCH'
+              else:
+                  meta=json.dumps({'name':MANIFEST,'parents':[root]}).encode()
+                  url='https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart'; m='POST'
+              multi=(('--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n').encode()+meta+
+                     ('\r\n--'+bnd+'\r\nContent-Type: application/json\r\n\r\n').encode()+body+('\r\n--'+bnd+'--\r\n').encode())
+              req=R.Request(url,data=multi,method=m,headers={'Authorization':'Bearer '+GTOK,
+                            'Content-Type':'multipart/related; boundary='+bnd})
+              return json.load(R.urlopen(req,timeout=180)).get('id',fid)
+
+          # ---------- Yemot ----------
+          YAPI='https://www.call2all.co.il/ym/api'; _yt={'v':None}
+          def ylogin():
+              d=P.urlencode({'username':YUSER,'password':YPASS}).encode()
+              r=json.load(R.urlopen(R.Request(YAPI+'/Login',data=d,method='POST'),timeout=60))
+              if r.get('responseStatus')!='OK': raise SystemExit('yemot login fail')
+              _yt['v']=r['token']; return _yt['v']
+          def ytok(): return _yt['v'] or ylogin()
+          def ypost(method,params):
+              p=dict(params); p['token']=ytok(); d=P.urlencode(p).encode()
+              req=R.Request(YAPI+'/'+method,data=d,method='POST')
+              req.add_header('Content-Type','application/x-www-form-urlencoded; charset=utf-8')
+              try:
+                  body=R.urlopen(req,timeout=90).read().decode('utf-8','replace')
+                  try: return json.loads(body)
+                  except: return {'_raw':body}
+              except E.HTTPError as e: return {'_http':e.code,'_body':e.read().decode('utf-8','replace')[:200]}
+          def yput_text(path,contents): return ypost('UploadTextFile',{'what':path,'contents':contents})
+          def yupload(path_ivr,localpath):
+              b=open(localpath,'rb').read(); boundary='--ymb'+str(int(time.time()))
+              parts=[('--'+boundary+'\r\nContent-Disposition: form-data; name="token"\r\n\r\n'+ytok()+'\r\n').encode(),
+                     ('--'+boundary+'\r\nContent-Disposition: form-data; name="path"\r\n\r\n'+path_ivr+'\r\n').encode(),
+                     ('--'+boundary+'\r\nContent-Disposition: form-data; name="upload"; filename="u.wav"\r\n').encode(),
+                     b'Content-Type: application/octet-stream\r\n\r\n'+b+('\r\n--'+boundary+'--\r\n').encode()]
+              data=b''.join(parts)
+              for i in range(6):
+                  req=R.Request(YAPI+'/UploadFile',data=data,method='POST')
+                  req.add_header('Content-Type','multipart/form-data; boundary='+boundary)
+                  try:
+                      r=json.loads(R.urlopen(req,timeout=900).read().decode('utf-8','replace'))
+                      if r.get('responseStatus')=='OK' or r.get('success'): return True
+                      print('   up resp',str(r)[:120],flush=True)
+                  except Exception as ex: print('   up err',str(ex)[:120],flush=True)
+                  time.sleep(6*(i+1))
+              return False
+
+          PLAYFILE_INI=("type=playfile\r\nstart=min\r\nsay_current=no\r\nplay_beep=no\r\n"
+                        "control_play4=seconds_minus\r\ncontrol_play6=seconds_plus\r\n")
+
+          def speakable(s):
+              s=re.sub(r'\s*\[[\w-]{6,}\]\s*','',s)
+              s=re.sub(r'\.(mp4|mkv|webm|m4a)$','',s,flags=re.I)
+              s=s.replace('｜',' ').replace('|',' ').replace('⧸','/')
+              s=re.sub(r'[.,;:"“”״]',' ',s)
+              return re.sub(r'\s+',' ',s).strip()[:60] or 'פרק'
+
+          # ---------- manifest ----------
+          ex=qf("name='"+MANIFEST+"' and '"+root+"' in parents and trashed=false")
+          fid=ex[0]['id'] if ex else None
+          man={'cats':{},'eps':{}}
+          if fid and not RESET:
+              try: man=json.loads(R.urlopen(R.Request('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media',
+                        headers={'Authorization':'Bearer '+GTOK}),timeout=120).read().decode())
+              except Exception as e: print('manifest read failed, starting fresh:',str(e)[:100],flush=True)
+          man.setdefault('cats',{}); man.setdefault('eps',{})
+
+          # ---------- enumerate Drive: subfolders = categories ----------
+          kids=qf("'"+root+"' in parents and trashed=false")
+          subs=[k for k in kids if k['mimeType']=='application/vnd.google-apps.folder' and not k['name'].startswith('_')]
+          loose=[k for k in kids if k['mimeType']!='application/vnd.google-apps.folder' and not k['name'].startswith('_')]
+          src={}
+          for s in subs:
+              vids=[x for x in qf("'"+s['id']+"' in parents and trashed=false")
+                    if x['mimeType']!='application/vnd.google-apps.folder']
+              if vids: src[s['name']]=vids
+          if loose: src.setdefault('כללי',[]).extend(loose)
+          if not src: sys.stderr.write('::error::no video files under '+ROOT_NAME+'\n'); sys.exit(1)
+
+          for cat in sorted(src):
+              if cat not in man['cats']:
+                  man['cats'][cat]={'i':len(man['cats'])+1}
+              ci=man['cats'][cat]['i']
+              n=max([e['i'] for e in man['eps'].values() if e['c']==cat] or [0])
+              for x in sorted(src[cat],key=lambda z:z['name']):
+                  if x['id'] in man['eps']: continue
+                  n+=1
+                  man['eps'][x['id']]={'c':cat,'i':n,'t':x['name'],'up':False}
+          fid=put_json(fid,man)
+
+          todo=[(k,v) for k,v in man['eps'].items() if not v.get('up')]
+          todo.sort(key=lambda kv:(man['cats'][kv[1]['c']]['i'],kv[1]['i']))
+          todo=todo[:LIMIT]
+          print('Categories: %d | episodes tracked: %d | already on line: %d | pushing now: %d'
+                %(len(man['cats']),len(man['eps']),sum(1 for e in man['eps'].values() if e.get('up')),len(todo)),flush=True)
+
+          SEG=840   # 14-minute chunks (~13MB) - the only size Yemot reliably accepts
+          done=0
+          for n,(gid,e) in enumerate(todo):
+              if n and n%4==0: GTOK=gtok()
+              ci=man['cats'][e['c']]['i']; ei=e['i']
+              print('  + [%s] %d %s'%(e['c'],ei,e['t'][:50]),flush=True)
+              try:
+                  for x in glob.glob('seg_*.wav')+['src.mp4','full.wav']:
+                      try: os.remove(x)
+                      except: pass
+                  dl_file(gid,'src.mp4')
+                  subprocess.run(['ffmpeg','-y','-loglevel','error','-i','src.mp4','-ar','8000','-ac','1',
+                                  '-acodec','pcm_s16le','full.wav'],check=True)
+                  os.remove('src.mp4')
+                  subprocess.run(['ffmpeg','-y','-loglevel','error','-i','full.wav','-f','segment',
+                                  '-segment_time',str(SEG),'-c','copy','seg_%03d.wav'],check=True)
+                  os.remove('full.wav')
+                  segs=sorted(glob.glob('seg_*.wav'))
+                  sub='ivr2:%s/%d/%d'%(EXT,ci,ei); okc=0
+                  for i,sg in enumerate(segs,1):
+                      if yupload('%s/%03d.wav'%(sub,i),sg): okc+=1
+                      os.remove(sg)
+                  if okc==len(segs) and okc>0:
+                      yput_text(sub+'/ext.ini',PLAYFILE_INI)
+                      e['up']=True; done+=1
+                  print('    %d/%d segments uploaded'%(okc,len(segs)),flush=True)
+              except Exception as ex:
+                  print('    FAIL',repr(ex)[:160],flush=True)
+                  for x in glob.glob('seg_*.wav')+['src.mp4','full.wav']:
+                      try: os.remove(x)
+                      except: pass
+              fid=put_json(fid,man)
+
+          # ---------- rebuild menus from what is actually ON the line ----------
+          up={}
+          for gid,e in man['eps'].items():
+              if e.get('up'): up.setdefault(e['c'],[]).append(e)
+          order=sorted(up.keys(),key=lambda c:man['cats'][c]['i'])
+          mv=[TITLE+'.']
+          for c in order:
+              mv.append('ל%s, הקישו %d.'%(speakable(c),man['cats'][c]['i']))
+          yput_text('ivr2:%s/ext.ini'%EXT,
+                    'type=menu\r\nsay_menu_voice=yes\r\ndigits=2\r\nmenu_voice='+' '.join(mv)+'\r\ntimeout=10\r\nM1001_say=yes\r\n')
+          for c in order:
+              ci=man['cats'][c]['i']; eps=sorted(up[c],key=lambda e:e['i'])
+              mv=[speakable(c)+'.']
+              for e in eps:
+                  mv.append('ל%s, הקישו %d.'%(speakable(e['t']),e['i']))
+              yput_text('ivr2:%s/%d/ext.ini'%(EXT,ci),
+                        'type=menu\r\nsay_menu_voice=yes\r\ndigits=2\r\nmenu_voice='+' '.join(mv)+'\r\ntimeout=10\r\nM1001_say=yes\r\n')
+          fid=put_json(fid,man)
+          total=sum(1 for e in man['eps'].values() if e.get('up'))
+          print('\nDone: pushed %d this run. On line now: %d in %d categories at %s'%(done,total,len(order),EXT),flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fh:
+              fh.write('## %s -> %s\npushed **%d** this run, **%d** total in **%d** categories\n'%(ROOT_NAME,EXT,done,total,len(order)))
+          PYEOF
