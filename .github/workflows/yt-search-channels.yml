@@ -1,0 +1,73 @@
+name: Find channels by YouTube search (no download)
+# Guessing @handles fails; this searches YouTube itself and ranks the channels
+# that own the results. Runs on a runner because the local network blocks
+# YouTube (NetFree, HTTP 418).
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: 'Search queries, separated by ;'
+        required: true
+        default: 'פיתוח קול שיעור;איך לשיר נכון;שיעור שירה למתחילים;תרגילי חימום קולי;טכניקת שירה בעברית'
+      per_query:
+        description: 'Results per query'
+        default: '40'
+      min_hits:
+        description: 'Only report channels with at least this many hits'
+        default: '2'
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Enable WARP
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install yt-dlp
+        run: pip install -q --upgrade yt-dlp
+      - name: Search
+        env:
+          QUERIES: ${{ inputs.queries }}
+          PERQ: ${{ inputs.per_query }}
+          MINH: ${{ inputs.min_hits }}
+        run: |
+          python3 << 'PYEOF'
+          import subprocess, os, json, collections
+
+          PERQ=int(os.environ.get('PERQ') or 40); MINH=int(os.environ.get('MINH') or 2)
+          queries=[q.strip() for q in os.environ['QUERIES'].split(';') if q.strip()]
+
+          agg=collections.defaultdict(lambda: {'n':0,'secs':0.0,'name':'','id':'','samples':[]})
+          for q in queries:
+              print('\n--- search: '+q,flush=True)
+              r=subprocess.run(['yt-dlp','--flat-playlist','--ignore-errors',
+                                '--print','%(channel)s\t%(channel_id)s\t%(title)s\t%(duration)s',
+                                'ytsearch%d:%s'%(PERQ,q)],capture_output=True,text=True,timeout=1500)
+              rows=[l.split('\t') for l in r.stdout.split('\n') if l.count('\t')>=3]
+              print('   %d results'%len(rows),flush=True)
+              for ch,cid,title,dur in rows:
+                  if not cid or cid=='NA': continue
+                  a=agg[cid]; a['n']+=1; a['name']=ch; a['id']=cid
+                  try: a['secs']+=float(dur)
+                  except: pass
+                  if len(a['samples'])<3: a['samples'].append(title[:70])
+
+          ranked=sorted(agg.values(),key=lambda a:-a['n'])
+          ranked=[a for a in ranked if a['n']>=MINH]
+          print('\n\n==== CHANNELS RANKED ====',flush=True)
+          for a in ranked:
+              print('%3d hits  %5.1fh  %-38s %s'%(a['n'],a['secs']/3600,a['name'][:38],a['id']),flush=True)
+              for s in a['samples']: print('             . '+s,flush=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fh:
+              fh.write('## channels found\n')
+              for a in ranked:
+                  fh.write('- **%d hits** — %s (`%s`)\n'%(a['n'],a['name'],a['id']))
+          print('\nJSON:'+json.dumps([{'n':a['n'],'name':a['name'],'id':a['id'],
+                'hours':round(a['secs']/3600,1)} for a in ranked],ensure_ascii=False))
+          PYEOF
