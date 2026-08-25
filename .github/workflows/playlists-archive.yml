@@ -1,0 +1,357 @@
+name: Playlists archive (multi-channel, filtered -> Drive)
+
+on:
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: 'Channel URLs / IDs / @handles, comma or newline separated'
+        required: true
+      folder:
+        description: 'Drive root folder name'
+        required: true
+        default: 'פיתוח קול - יוטיוב'
+      exclude_re:
+        description: 'Skip playlists whose title matches this (python regex, case-insensitive)'
+        default: 'ממליצ|המלצ|testimonial|הופע|מופע|תלמיד|student|showcase|קליפ|clip|cover|קאבר|חתונה|wedding|אירוע|אודישן|audition|לייב|live'
+      include_re:
+        description: 'Keep only playlists matching this (empty = keep all that survive exclude)'
+        default: ''
+      min_videos:
+        description: 'Ignore playlists smaller than this'
+        default: '3'
+      dry_run:
+        description: 'yes = list what would be taken, download nothing'
+        default: 'yes'
+      per_job:
+        description: 'Videos per runner (each runner = fresh IP; >3 risks bot-block)'
+        default: '3'
+      chunks:
+        description: 'Max chunks this run (total = chunks x per_job)'
+        default: '20'
+      quality:
+        description: 'Max height (480/720/1080)'
+        default: '720'
+
+concurrency:
+  group: playlists-archive-${{ inputs.folder }}
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      matrix: ${{ steps.d.outputs.matrix }}
+      root: ${{ steps.d.outputs.root }}
+      count: ${{ steps.d.outputs.count }}
+      total: ${{ steps.d.outputs.total }}
+      remaining: ${{ steps.d.outputs.remaining }}
+    steps:
+      - name: Enable WARP (bypass geo)
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - name: Install Deno (JS runtime required by yt-dlp for YouTube)
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install yt-dlp
+        run: pip install -q --upgrade yt-dlp
+      - name: Enumerate playlists + filter + diff against Drive
+        id: d
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          CHANNELS: ${{ inputs.channels }}
+          ROOT_NAME: ${{ inputs.folder }}
+          EXCLUDE_RE: ${{ inputs.exclude_re }}
+          INCLUDE_RE: ${{ inputs.include_re }}
+          MIN_VIDEOS: ${{ inputs.min_videos }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PER_JOB: ${{ inputs.per_job }}
+          CHUNKS: ${{ inputs.chunks }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, json, os, subprocess, sys, re
+
+          if not (os.environ.get('CLIENT_ID') and os.environ.get('CLIENT_SECRET') and os.environ.get('REFRESH_TOKEN')):
+              sys.stderr.write('::error::DRIVE_* secrets missing\n'); sys.exit(1)
+
+          ROOT_NAME=os.environ['ROOT_NAME']
+          PER=max(1,int(os.environ.get('PER_JOB') or 3)); NCH=max(1,int(os.environ.get('CHUNKS') or 20))
+          MINV=max(1,int(os.environ.get('MIN_VIDEOS') or 3))
+          DRY=(os.environ.get('DRY_RUN','yes').strip().lower() in ('yes','true','1'))
+          EXC=os.environ.get('EXCLUDE_RE','').strip()
+          INC=os.environ.get('INCLUDE_RE','').strip()
+          exc=re.compile(EXC,re.I) if EXC else None
+          inc=re.compile(INC,re.I) if INC else None
+
+          raw=os.environ['CHANNELS'].replace(',','\n').split('\n')
+          CHS=[]
+          for c in raw:
+              c=c.strip().rstrip('/')
+              if not c: continue
+              if not c.startswith('http'):
+                  c='https://www.youtube.com/'+('channel/'+c if c.startswith('UC') else c.lstrip('/'))
+              c=re.sub(r'/(videos|streams|shorts|playlists|featured|about)$','',c)
+              CHS.append(c)
+          print('channels: %d'%len(CHS),flush=True)
+
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          token=json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          def api(u,m='GET',b=None):
+              h={'Authorization':'Bearer '+token}
+              if b is not None: h['Content-Type']='application/json'
+              return json.load(R.urlopen(R.Request(u,data=(json.dumps(b).encode() if b is not None else None),headers=h,method=m),timeout=90))
+          def qf(query,fields='files(id,name,mimeType)'):
+              out,pg=[],None
+              while True:
+                  u='https://www.googleapis.com/drive/v3/files?q='+P.quote(query)+'&fields=nextPageToken,'+fields+'&pageSize=1000'
+                  if pg:u+='&pageToken='+pg
+                  r=api(u);out+=r.get('files',[]);pg=r.get('nextPageToken')
+                  if not pg:break
+              return out
+
+          nm=ROOT_NAME.replace('\\','\\\\').replace("'","\\'")
+          f=qf("name='"+nm+"' and mimeType='application/vnd.google-apps.folder' and trashed=false")
+          root=f[0]['id'] if f else api('https://www.googleapis.com/drive/v3/files','POST',
+                {'name':ROOT_NAME,'mimeType':'application/vnd.google-apps.folder'})['id']
+          print('Drive root: %s %s'%(ROOT_NAME,root),flush=True)
+
+          def norm(t):
+              t=re.sub(r'\s*\[[\w-]{6,}\]\s*$','',t)
+              t=re.sub(r'\.(mp4|mkv|webm|m4a|part|tmp)$','',t,flags=re.I)
+              t=t.replace('｜','|').lower()
+              t=re.sub(r'[^0-9a-z֐-׿]+',' ',t)
+              return re.sub(r'\s+',' ',t).strip()
+
+          # single-threaded scan on purpose: parallel Drive scans mis-count (2026-08-09 lesson)
+          existing=set(); existing_titles=set()
+          def scan(fid):
+              for c in qf("'"+fid+"' in parents and trashed=false"):
+                  if c['mimeType']=='application/vnd.google-apps.folder': scan(c['id'])
+                  else:
+                      n=c.get('name','')
+                      m=re.search(r'\[([\w-]{6,})\]',n)
+                      if m: existing.add(m.group(1))
+                      k=norm(n)
+                      if k: existing_titles.add(k)
+          scan(root)
+          print('Already in Drive: %d'%len(existing),flush=True)
+
+          def ytlist(url,t=1200):
+              try:
+                  r=subprocess.run(['yt-dlp','--flat-playlist','--print','%(id)s\t%(title)s',url],
+                                   capture_output=True,text=True,timeout=t)
+                  return [l for l in r.stdout.split('\n') if '\t' in l]
+              except Exception as e:
+                  print('  ytlist failed: %s'%type(e).__name__,flush=True); return []
+
+          def chname(url):
+              try:
+                  r=subprocess.run(['yt-dlp','--playlist-items','1','--print','%(channel)s',url+'/videos'],
+                                   capture_output=True,text=True,timeout=180)
+                  n=(r.stdout or '').strip().split('\n')[0].strip()
+                  return n or url.rstrip('/').split('/')[-1]
+              except Exception:
+                  return url.rstrip('/').split('/')[-1]
+
+          def safe(s):
+              s=re.sub(r'[\\/:*?"<>|]+',' ',s or '')
+              return re.sub(r'\s+',' ',s).strip()[:80] or 'misc'
+
+          # ---- enumerate + filter -------------------------------------------------
+          picked=[]; skipped=[]
+          for ch in CHS:
+              cn=chname(ch)
+              pls=ytlist(ch+'/playlists',300)
+              print('\n=== %s  (%d playlists)'%(cn,len(pls)),flush=True)
+              for l in pls:
+                  pid,pt=l.split('\t',1)
+                  if not pid.startswith('PL'):
+                      continue
+                  if exc and exc.search(pt):
+                      skipped.append((cn,pt,'excluded')); continue
+                  if inc and not inc.search(pt):
+                      skipped.append((cn,pt,'not-included')); continue
+                  subs=ytlist('https://www.youtube.com/playlist?list='+pid,600)
+                  if len(subs)<MINV:
+                      skipped.append((cn,pt,'too-small:%d'%len(subs))); continue
+                  vids=[]
+                  for s in subs:
+                      v,t=s.split('\t',1)
+                      if v in existing or norm(t) in existing_titles: continue
+                      vids.append(v)
+                  print('  KEEP  %-55s  %3d vids, %3d new'%(pt[:55],len(subs),len(vids)),flush=True)
+                  if vids:
+                      picked.append({'ch':cn,'pl':pt,'dir':safe(cn)+'/'+safe(pt),'ids':vids})
+
+          print('\n--- skipped %d playlists ---'%len(skipped),flush=True)
+          for cn,pt,why in skipped[:200]:
+              print('  skip[%-14s] %s / %s'%(why,cn[:20],pt[:60]),flush=True)
+
+          total=sum(len(p['ids']) for p in picked)
+          print('\nPLAYLISTS KEPT: %d | NEW VIDEOS: %d'%(len(picked),total),flush=True)
+
+          sm=os.environ.get('GITHUB_STEP_SUMMARY')
+          if sm:
+              with open(sm,'a',encoding='utf-8') as fh:
+                  fh.write('## %s\n- playlists kept: **%d**\n- new videos: **%d**\n- skipped playlists: **%d**\n- dry run: **%s**\n\n'
+                           %(ROOT_NAME,len(picked),total,len(skipped),DRY))
+                  fh.write('| channel | playlist | new |\n|---|---|---|\n')
+                  for p in picked[:120]:
+                      fh.write('| %s | %s | %d |\n'%(p['ch'][:30],p['pl'][:60],len(p['ids'])))
+
+          if DRY:
+              print('DRY RUN - nothing queued.',flush=True)
+              matrix=[]
+          else:
+              flat=[]
+              for p in picked:
+                  for v in p['ids']: flat.append((p['dir'],v))
+              take=flat[:PER*NCH]
+              # one folder per chunk, so the Drive destination is unambiguous
+              matrix=[]
+              bydir={}
+              for d,v in take: bydir.setdefault(d,[]).append(v)
+              for d,vs in bydir.items():
+                  for i in range(0,len(vs),PER):
+                      matrix.append({'idx':len(matrix),'dir':d,'ids':','.join(vs[i:i+PER])})
+              matrix=matrix[:NCH]
+
+          out=os.environ['GITHUB_OUTPUT']
+          with open(out,'a',encoding='utf-8') as fh:
+              fh.write('matrix='+json.dumps({'include':matrix},ensure_ascii=False)+'\n')
+              fh.write('root=%s\n'%root)
+              fh.write('count=%d\n'%len(matrix))
+              fh.write('total=%d\n'%total)
+              fh.write('remaining=%d\n'%max(0,total-sum(len(m['ids'].split(',')) for m in matrix)))
+          PYEOF
+
+  download:
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    steps:
+      - name: Enable WARP (fresh exit IP per runner)
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install yt-dlp + ffmpeg
+        run: |
+          pip install -q --upgrade yt-dlp
+          sudo apt-get -qq update && sudo apt-get -qq install -y ffmpeg
+      - name: Download chunk -> Drive
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          ROOT: ${{ needs.discover.outputs.root }}
+          SUBDIR: ${{ matrix.dir }}
+          IDS: ${{ matrix.ids }}
+          QUALITY: ${{ inputs.quality }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, urllib.error as E, json, os, subprocess, sys, re, glob
+
+          IDS=[x for x in os.environ['IDS'].split(',') if x.strip()]
+          SUB=os.environ['SUBDIR']; ROOT=os.environ['ROOT']
+          Q=os.environ.get('QUALITY','720')
+
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          token=json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          def api(u,m='GET',b=None):
+              h={'Authorization':'Bearer '+token}
+              if b is not None: h['Content-Type']='application/json'
+              return json.load(R.urlopen(R.Request(u,data=(json.dumps(b).encode() if b is not None else None),headers=h,method=m),timeout=90))
+
+          def child(parent,name):
+              nm=name.replace('\\','\\\\').replace("'","\\'")
+              q=("name='"+nm+"' and '"+parent+"' in parents and "
+                 "mimeType='application/vnd.google-apps.folder' and trashed=false")
+              r=api('https://www.googleapis.com/drive/v3/files?q='+P.quote(q)+'&fields=files(id)')
+              if r.get('files'): return r['files'][0]['id']
+              return api('https://www.googleapis.com/drive/v3/files','POST',
+                         {'name':name,'mimeType':'application/vnd.google-apps.folder','parents':[parent]})['id']
+
+          dest=ROOT
+          for part in SUB.split('/'):
+              if part.strip(): dest=child(dest,part.strip())
+          print('dest folder: %s -> %s'%(SUB,dest),flush=True)
+
+          def upload(path,parent):
+              name=os.path.basename(path); size=os.path.getsize(path)
+              meta={'name':name,'parents':[parent]}
+              req=R.Request('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable',
+                            data=json.dumps(meta).encode(),
+                            headers={'Authorization':'Bearer '+token,'Content-Type':'application/json; charset=UTF-8',
+                                     'X-Upload-Content-Type':'video/mp4'},method='POST')
+              loc=R.urlopen(req,timeout=120).headers['Location']
+              CH=8*1024*1024; off=0
+              with open(path,'rb') as fh:
+                  while off<size:
+                      buf=fh.read(CH)
+                      if not buf: break
+                      r=R.Request(loc,data=buf,method='PUT',headers={
+                          'Content-Length':str(len(buf)),
+                          'Content-Range':'bytes %d-%d/%d'%(off,off+len(buf)-1,size)})
+                      try:
+                          R.urlopen(r,timeout=300); off+=len(buf)
+                      except E.HTTPError as e:
+                          if e.code==308:
+                              off+=len(buf)
+                          else: raise
+              print('  uploaded %s (%.1f MB)'%(name,size/1048576.0),flush=True)
+
+          ok=0
+          for vid in IDS:
+              url='https://www.youtube.com/watch?v='+vid
+              cmd=['yt-dlp','-N','4','--no-playlist','--retries','3','--fragment-retries','10',
+                   '-f','bv*[height<=%s]+ba/b[height<=%s]/b'%(Q,Q),'--merge-output-format','mp4',
+                   '-o','%(title).120s [%(id)s].%(ext)s',url]
+              r=subprocess.run(cmd,capture_output=True,text=True,timeout=3600)
+              files=glob.glob('*'+vid+'*')
+              files=[f for f in files if os.path.isfile(f) and not f.endswith(('.part','.ytdl'))]
+              if not files:
+                  print('  DL FAIL %s: %s'%(vid,(r.stderr or '')[-200:]),flush=True); continue
+              for f in files:
+                  try:
+                      upload(f,dest); ok+=1
+                  except Exception as e:
+                      print('  UPLOAD FAIL %s: %s'%(f,type(e).__name__),flush=True)
+                  finally:
+                      try: os.remove(f)
+                      except Exception: pass
+
+          print('OK [%d/%d]'%(ok,len(IDS)),flush=True)
+          if ok==0:
+              sys.stderr.write('::error::0/%d downloaded - this exit IP is bot-checked. Re-run to get new IPs.\n'%len(IDS))
+              sys.exit(1)
+          PYEOF
+
+  summary:
+    needs: [discover, download]
+    if: always() && needs.discover.outputs.count != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report
+        run: |
+          echo "## Playlists archive" >> $GITHUB_STEP_SUMMARY
+          echo "- chunks this run: **${{ needs.discover.outputs.count }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- new videos found: **${{ needs.discover.outputs.total }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- still remaining after this run: **${{ needs.discover.outputs.remaining }}**" >> $GITHUB_STEP_SUMMARY
+          echo "- download result: **${{ needs.download.result }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Re-run to continue (dedup against Drive is automatic; failed chunks get fresh IPs)." >> $GITHUB_STEP_SUMMARY
