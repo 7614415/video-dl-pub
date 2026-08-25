@@ -1,0 +1,97 @@
+name: Find VIDEOS by YouTube search (no download)
+# Video-level search. Channel-level search was too coarse: a good voice channel
+# still holds 90% irrelevant material. This ranks individual videos so a human
+# can hand-pick a small, on-topic set before anything is downloaded.
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: 'Search queries, separated by ;'
+        required: true
+      per_query:
+        description: 'Results per query'
+        default: '30'
+      min_sec:
+        description: 'Drop videos shorter than this (kills Shorts)'
+        default: '150'
+      max_sec:
+        description: 'Drop videos longer than this (kills streams/concerts)'
+        default: '5400'
+      hebrew_only:
+        description: 'yes = keep only titles containing Hebrew letters'
+        default: 'yes'
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Enable WARP
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install yt-dlp
+        run: pip install -q --upgrade yt-dlp
+      - name: Search videos
+        env:
+          QUERIES: ${{ inputs.queries }}
+          PERQ: ${{ inputs.per_query }}
+          MINS: ${{ inputs.min_sec }}
+          MAXS: ${{ inputs.max_sec }}
+          HEBONLY: ${{ inputs.hebrew_only }}
+        run: |
+          python3 << 'PYEOF'
+          import subprocess, json, os, re, sys
+
+          qs=[q.strip() for q in os.environ['QUERIES'].split(';') if q.strip()]
+          perq=int(os.environ.get('PERQ') or 30)
+          mins=int(os.environ.get('MINS') or 150)
+          maxs=int(os.environ.get('MAXS') or 5400)
+          hebonly=(os.environ.get('HEBONLY','yes').lower()=='yes')
+          HEB=re.compile(r'[\u0590-\u05FF]')
+
+          vids={}
+          for q in qs:
+              try:
+                  r=subprocess.run(['yt-dlp','--flat-playlist','-J','--no-warnings',
+                                    f'ytsearch{perq}:{q}'],capture_output=True,text=True,timeout=900)
+                  if r.returncode!=0:
+                      print(f'QUERY FAIL {q}: {r.stderr[-160:]}',flush=True); continue
+                  data=json.loads(r.stdout or '{}')
+              except Exception as e:
+                  print(f'QUERY ERR {q}: {str(e)[:160]}',flush=True); continue
+              n=0
+              for e in (data.get('entries') or []):
+                  vid=e.get('id')
+                  if not vid: continue
+                  dur=e.get('duration') or 0
+                  title=(e.get('title') or '').strip()
+                  if dur<mins or dur>maxs: continue
+                  if hebonly and not HEB.search(title): continue
+                  rec=vids.setdefault(vid,{'id':vid,'title':title,'dur':int(dur),
+                                           'chan':(e.get('channel') or e.get('uploader') or ''),
+                                           'chan_id':e.get('channel_id') or '','q':[]})
+                  if q not in rec['q']: rec['q'].append(q)
+                  n+=1
+              print(f'{q}  -> kept {n}',flush=True)
+
+          out=sorted(vids.values(), key=lambda v:(-len(v['q']), -v['dur']))
+          os.makedirs('out',exist_ok=True)
+          with open('out/videos.json','w',encoding='utf-8') as f:
+              json.dump(out,f,ensure_ascii=False,indent=1)
+          # TSV is what a human actually reads
+          with open('out/videos.tsv','w',encoding='utf-8') as f:
+              f.write('id\tmin\thits\tchannel\ttitle\n')
+              for v in out:
+                  f.write('%s\t%d\t%d\t%s\t%s\n'%(v['id'],round(v['dur']/60),len(v['q']),v['chan'],v['title']))
+          print('TOTAL UNIQUE VIDEOS: %d'%len(out))
+          PYEOF
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-search
+          path: out/
