@@ -1,0 +1,90 @@
+name: Probe channels (size + course playlists, no download)
+# Read-only survey of candidate channels. Local machine cannot reach YouTube
+# (NetFree returns HTTP 418), so enumeration has to happen on a runner.
+on:
+  workflow_dispatch:
+    inputs:
+      channels:
+        description: 'Comma-separated channel URLs or @handles'
+        required: true
+        default: '@KenTamplinVocalAcademy,@NewYorkVocalCoaching,@DrDansVoiceEssentials,@EricArceneaux'
+      min_playlist:
+        description: 'Only list playlists with at least this many videos'
+        default: '4'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Enable WARP
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install yt-dlp
+        run: pip install -q --upgrade yt-dlp
+      - name: Survey
+        env:
+          CHANNELS: ${{ inputs.channels }}
+          MINPL: ${{ inputs.min_playlist }}
+        run: |
+          python3 << 'PYEOF'
+          import subprocess, re, os, json
+
+          MINPL=int(os.environ.get('MINPL') or 4)
+          chans=[c.strip() for c in os.environ['CHANNELS'].split(',') if c.strip()]
+
+          def ytlist(url,extra=None):
+              cmd=['yt-dlp','--flat-playlist','--print','%(id)s\t%(title)s\t%(duration)s']
+              if extra: cmd+=extra
+              cmd.append(url)
+              r=subprocess.run(cmd,capture_output=True,text=True,timeout=1200)
+              return [l.split('\t') for l in r.stdout.split('\n') if '\t' in l], r.stderr
+
+          summary=[]
+          for c in chans:
+              ch=c if c.startswith('http') else 'https://www.youtube.com/'+c.lstrip('/')
+              ch=re.sub(r'/(videos|streams|shorts|playlists|featured)/?$','',ch.rstrip('/'))
+              print('\n'+'='*70+'\n'+ch,flush=True)
+              vids,err=ytlist(ch+'/videos')
+              ids={v[0] for v in vids}
+              secs=0; known=0
+              for v in vids:
+                  try: secs+=float(v[2]); known+=1
+                  except: pass
+              pls,_=ytlist(ch+'/playlists')
+              rows=[]
+              for p in pls:
+                  pid,ptitle=p[0],p[1]
+                  if not pid.startswith('PL'): continue
+                  subs,_=ytlist('https://www.youtube.com/playlist?list='+pid)
+                  if len(subs)<MINPL: continue
+                  psec=0
+                  for s in subs:
+                      try: psec+=float(s[2])
+                      except: pass
+                      ids.add(s[0])
+                  rows.append((len(subs),psec,ptitle))
+              rows.sort(reverse=True)
+              est_h=(secs/known*len(ids)/3600) if known else 0
+              print('videos tab: %d | unique incl. playlists: %d | est. total ~%.0f hours'%(len(vids),len(ids),est_h),flush=True)
+              print('playlists (>=%d videos):'%MINPL,flush=True)
+              for n,ps,t in rows[:25]:
+                  print('   %3d vids  %5.1fh  %s'%(n,ps/3600,t[:60]),flush=True)
+              summary.append({'channel':ch,'videos':len(vids),'unique':len(ids),
+                              'est_hours':round(est_h,1),
+                              'playlists':[{'n':n,'hours':round(ps/3600,1),'title':t} for n,ps,t in rows[:25]]})
+
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fh:
+              for s in summary:
+                  fh.write('## %s\n%d videos (%d incl. playlists), ~%s hours\n\n'
+                           %(s['channel'],s['videos'],s['unique'],s['est_hours']))
+                  for p in s['playlists']:
+                      fh.write('- **%d** vids / %sh — %s\n'%(p['n'],p['hours'],p['title']))
+                  fh.write('\n')
+          print('\n\nJSON:\n'+json.dumps(summary,ensure_ascii=False))
+          PYEOF
