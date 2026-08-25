@@ -1,0 +1,170 @@
+name: Transcode Drive folder to car-safe MP4 (H.264 + AAC)
+# yt-dlp's bestvideo+bestaudio path yields VP9 + Opus muxed into .mp4.
+# Car head units (verified: Geely Geometry 2023) decode the picture but have no
+# Opus decoder -> video plays, silence. This re-encodes to H.264 High + AAC-LC,
+# which every head unit, TV and phone can play.
+# Files are updated IN PLACE (same file id, Drive keeps the old revision) and
+# stamped appProperties.tc=h264aac so re-runs skip them - no race between jobs.
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: 'Drive root folder name'
+        required: true
+        default: 'Vocali - יוטיוב'
+      per_job:
+        description: 'Files per runner'
+        default: '4'
+      chunks:
+        description: 'Max chunks this run'
+        default: '18'
+      maxh:
+        description: 'Max height'
+        default: '720'
+      skip_subfolder:
+        description: 'Subfolder name to ignore (audio output)'
+        default: 'שמע'
+
+concurrency:
+  group: transcode-${{ inputs.folder }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.s.outputs.matrix }}
+      count: ${{ steps.s.outputs.count }}
+    steps:
+      - id: s
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          ROOT_NAME: ${{ inputs.folder }}
+          PER_JOB: ${{ inputs.per_job }}
+          CHUNKS: ${{ inputs.chunks }}
+          SKIP: ${{ inputs.skip_subfolder }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, json, os, sys
+
+          ROOT_NAME=os.environ['ROOT_NAME']; SKIP=os.environ.get('SKIP','')
+          PER=max(1,int(os.environ.get('PER_JOB') or 4)); NCH=max(1,int(os.environ.get('CHUNKS') or 18))
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          tok=json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          def qf(query,fields='files(id,name,mimeType,size,appProperties)'):
+              out,pg=[],None
+              while True:
+                  u='https://www.googleapis.com/drive/v3/files?q='+P.quote(query)+'&fields=nextPageToken,'+fields+'&pageSize=1000'
+                  if pg:u+='&pageToken='+pg
+                  r=json.load(R.urlopen(R.Request(u,headers={'Authorization':'Bearer '+tok}),timeout=90))
+                  out+=r.get('files',[]);pg=r.get('nextPageToken')
+                  if not pg:break
+              return out
+          FOLD='application/vnd.google-apps.folder'
+          nm=ROOT_NAME.replace('\\','\\\\').replace("'","\\'")
+          f=qf("name='"+nm+"' and mimeType='"+FOLD+"' and trashed=false")
+          if not f: sys.stderr.write('::error::folder not found\n'); sys.exit(1)
+          root=f[0]['id']
+
+          todo=[]
+          def walk(fid):
+              for c in qf("'"+fid+"' in parents and trashed=false"):
+                  if c['mimeType']==FOLD:
+                      if c['name']==SKIP or c['name'].startswith('_'): continue
+                      walk(c['id'])
+                  elif not c['name'].startswith('_'):
+                      if (c.get('appProperties') or {}).get('tc')=='h264aac': continue
+                      todo.append(c)
+          walk(root)
+          todo.sort(key=lambda x:int(x.get('size',0)))
+          take=todo[:PER*NCH]
+          print('needing transcode: %d | this run: %d'%(len(todo),len(take)),flush=True)
+          mat=[{'i':i//PER,'ids':','.join(x['id'] for x in take[i:i+PER])} for i in range(0,len(take),PER)]
+          with open(os.environ['GITHUB_OUTPUT'],'a') as fh:
+              fh.write('matrix='+json.dumps(mat)+'\n'); fh.write('count=%d\n'%len(take))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fh:
+              fh.write('## transcode %s\nremaining **%d**, queued **%d** in %d runners\n'%(ROOT_NAME,len(todo),len(take),len(mat)))
+          PYEOF
+
+  convert:
+    needs: scan
+    if: needs.scan.outputs.count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        chunk: ${{ fromJson(needs.scan.outputs.matrix) }}
+    steps:
+      - name: ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: Convert chunk
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          IDS: ${{ matrix.chunk.ids }}
+          MAXH: ${{ inputs.maxh }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, json, os, subprocess, sys
+
+          IDS=[x for x in os.environ['IDS'].split(',') if x]
+          MAXH=int(os.environ.get('MAXH') or 720)
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          def gtok(): return json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          tok=gtok()
+          def meta(fid):
+              return json.load(R.urlopen(R.Request(
+                  'https://www.googleapis.com/drive/v3/files/'+fid+'?fields=id,name,size',
+                  headers={'Authorization':'Bearer '+tok}),timeout=60))
+          def dl(fid,dest):
+              req=R.Request('https://www.googleapis.com/drive/v3/files/'+fid+'?alt=media',
+                            headers={'Authorization':'Bearer '+tok})
+              with R.urlopen(req,timeout=1800) as r, open(dest,'wb') as f:
+                  while True:
+                      c=r.read(1<<20)
+                      if not c: break
+                      f.write(c)
+
+          done=0
+          for fid in IDS:
+              try:
+                  m=meta(fid); print('* '+m['name'][:65],flush=True)
+                  for x in ('in.mp4','out.mp4'):
+                      if os.path.exists(x): os.remove(x)
+                  dl(fid,'in.mp4')
+                  vf="scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"%(MAXH*2,MAXH)
+                  r=subprocess.run(['ffmpeg','-y','-loglevel','error','-i','in.mp4',
+                      '-c:v','libx264','-profile:v','high','-level','4.0','-pix_fmt','yuv420p',
+                      '-crf','23','-preset','veryfast','-vf',vf,
+                      '-c:a','aac','-b:a','128k','-ac','2','-ar','44100',
+                      '-movflags','+faststart','out.mp4'],capture_output=True,text=True,timeout=5400)
+                  if r.returncode!=0 or not os.path.exists('out.mp4'):
+                      print('  FFMPEG FAIL',r.stderr[-200:],flush=True); continue
+                  data=open('out.mp4','rb').read()
+                  tok=gtok()
+                  bnd='----TC'
+                  md=json.dumps({'appProperties':{'tc':'h264aac'}}).encode()
+                  body=(('--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n').encode()+md+
+                        ('\r\n--'+bnd+'\r\nContent-Type: video/mp4\r\n\r\n').encode()+data+('\r\n--'+bnd+'--\r\n').encode())
+                  R.urlopen(R.Request('https://www.googleapis.com/upload/drive/v3/files/'+fid+'?uploadType=multipart',
+                      data=body,method='PATCH',headers={'Authorization':'Bearer '+tok,
+                      'Content-Type':'multipart/related; boundary='+bnd}),timeout=2400).read()
+                  done+=1
+                  print('  OK %dMB -> %dMB (H.264/AAC)'%(int(m.get('size',0))//1048576,len(data)//1048576),flush=True)
+              except Exception as e:
+                  print('  ERR',str(e)[:180],flush=True)
+              finally:
+                  for x in ('in.mp4','out.mp4'):
+                      try: os.remove(x)
+                      except: pass
+          print('chunk done %d/%d'%(done,len(IDS)))
+          if done==0: sys.stderr.write('::error::0/%d converted\n'%len(IDS)); sys.exit(1)
+          PYEOF
