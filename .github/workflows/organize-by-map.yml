@@ -1,0 +1,113 @@
+name: Organize Drive files into course folders (by id map)
+# organize-folders.yml groups by playlist/title, which is how YouTube happens to
+# be arranged - not how a course should be. This takes an explicit
+# {"folder": ["videoId", ...]} map so the curriculum order is a human decision.
+# Drive-only: no downloading, no re-uploading, just parent moves.
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: 'Drive root folder name'
+        required: true
+        default: 'פיתוח קול - יוטיוב'
+      map:
+        description: 'JSON: {"subfolder name": ["id1","id2"], ...}'
+        required: true
+      numbered:
+        description: 'yes = prefix each file with its order inside the folder'
+        default: 'yes'
+
+jobs:
+  organize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Move files into course folders
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          ROOT_NAME: ${{ inputs.folder }}
+          MAP: ${{ inputs.map }}
+          NUMBERED: ${{ inputs.numbered }}
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request as R, urllib.parse as P, json, os, re, sys
+
+          if not (os.environ.get('CLIENT_ID') and os.environ.get('CLIENT_SECRET') and os.environ.get('REFRESH_TOKEN')):
+              sys.stderr.write('::error::DRIVE_* secrets missing\n'); sys.exit(1)
+          ROOT_NAME=os.environ['ROOT_NAME']
+          NUMBERED=(os.environ.get('NUMBERED','yes').lower()=='yes')
+          try:
+              MAP=json.loads(os.environ['MAP'])
+          except Exception as e:
+              sys.stderr.write('::error::map is not valid JSON: %s\n'%str(e)[:200]); sys.exit(1)
+
+          _td=P.urlencode({'client_id':os.environ['CLIENT_ID'],'client_secret':os.environ['CLIENT_SECRET'],
+                           'refresh_token':os.environ['REFRESH_TOKEN'],'grant_type':'refresh_token'}).encode()
+          token=json.load(R.urlopen(R.Request('https://oauth2.googleapis.com/token',data=_td,method='POST')))['access_token']
+          def api(u,m='GET',b=None):
+              h={'Authorization':'Bearer '+token}
+              if b is not None: h['Content-Type']='application/json'
+              return json.load(R.urlopen(R.Request(u,data=(json.dumps(b).encode() if b is not None else None),headers=h,method=m),timeout=90))
+          def qf(query,fields='files(id,name,mimeType,parents)'):
+              out,pg=[],None
+              while True:
+                  u='https://www.googleapis.com/drive/v3/files?q='+P.quote(query)+'&fields=nextPageToken,'+fields+'&pageSize=1000'
+                  if pg:u+='&pageToken='+pg
+                  r=api(u);out+=r.get('files',[]);pg=r.get('nextPageToken')
+                  if not pg:break
+              return out
+
+          nm=ROOT_NAME.replace('\\','\\\\').replace("'","\\'")
+          f=qf("name='"+nm+"' and mimeType='application/vnd.google-apps.folder' and trashed=false")
+          if not f:
+              sys.stderr.write('::error::root folder not found: %s\n'%ROOT_NAME); sys.exit(1)
+          root=f[0]['id']
+          print('root:',ROOT_NAME,root,flush=True)
+
+          # index every file under the root by its [videoId] tag
+          byid={}
+          def scan(fid):
+              for c in qf("'"+fid+"' in parents and trashed=false"):
+                  if c['mimeType']=='application/vnd.google-apps.folder': scan(c['id'])
+                  else:
+                      m=re.search(r'\[([\w-]{11})\]',c.get('name',''))
+                      if m: byid[m.group(1)]=c
+          scan(root)
+          print('files indexed:',len(byid),flush=True)
+
+          def ensure(name):
+              q=("name='"+name.replace('\\','\\\\').replace("'","\\'")+"' and '"+root+
+                 "' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false")
+              g=qf(q)
+              if g: return g[0]['id']
+              return api('https://www.googleapis.com/drive/v3/files','POST',
+                         {'name':name,'mimeType':'application/vnd.google-apps.folder','parents':[root]})['id']
+
+          moved=missing=0
+          for sub in sorted(MAP):
+              dest=ensure(sub)
+              print('\n== %s (%s)'%(sub,dest),flush=True)
+              for n,vid in enumerate(MAP[sub],1):
+                  fobj=byid.get(vid)
+                  if not fobj:
+                      print('  MISSING '+vid,flush=True); missing+=1; continue
+                  parents=fobj.get('parents') or []
+                  body={}
+                  if NUMBERED:
+                      base=re.sub(r'^\d{2,3}\s+','',fobj['name'])
+                      body['name']='%02d %s'%(n,base)
+                  url=('https://www.googleapis.com/drive/v3/files/'+fobj['id']+
+                       '?addParents='+dest+'&removeParents='+','.join(parents)+'&fields=id,name')
+                  try:
+                      r=api(url,'PATCH',body if body else {})
+                      moved+=1; print('  -> '+r['name'][:70],flush=True)
+                  except Exception as e:
+                      print('  ERR '+vid+': '+str(e)[:140],flush=True)
+
+          print('\nmoved: %d | missing: %d'%(moved,missing))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as fh:
+              fh.write('## Course layout\n- folders: **%d**\n- files moved: **%d**\n- not yet in Drive: **%d**\n'
+                       %(len(MAP),moved,missing))
+          PYEOF
