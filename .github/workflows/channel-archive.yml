@@ -212,7 +212,11 @@ jobs:
                   '--retries','6','--fragment-retries','12','--file-access-retries','4',
                   '-o','dl/%(title)s [%(id)s].%(ext)s']
           def dl(vid,clients):
-              fmt='best[height<=%d]/bestvideo[height<=%d]+bestaudio/best'%(MAXH,MAXH)
+              # H.264 + AAC only. Plain bestvideo+bestaudio hands back VP9+Opus muxed
+              # into .mp4, which car head units play silently (no Opus decoder).
+              fmt=('bestvideo[vcodec^=avc1][height<=%d]+bestaudio[acodec^=mp4a]/'
+                   'best[vcodec^=avc1][height<=%d]/'
+                   'best[height<=%d]/best')%(MAXH,MAXH,MAXH)
               return subprocess.run(['yt-dlp','-f',fmt,'--merge-output-format','mp4',
                   '--extractor-args','youtube:player_client='+clients]+COMMON+
                   ['https://www.youtube.com/watch?v='+vid],capture_output=True,text=True,timeout=2400)
