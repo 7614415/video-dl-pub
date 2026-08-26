@@ -202,6 +202,7 @@ jobs:
                       except: pass
                   dl_file(gid,'src.mp4')
                   subprocess.run(['ffmpeg','-y','-loglevel','error','-i','src.mp4','-ar','8000','-ac','1',
+                                  '-af','loudnorm=I=-16:TP=-1.5:LRA=11',
                                   '-acodec','pcm_s16le','full.wav'],check=True)
                   os.remove('src.mp4')
                   subprocess.run(['ffmpeg','-y','-loglevel','error','-i','full.wav','-f','segment',
@@ -232,14 +233,14 @@ jobs:
           for c in order:
               mv.append('ל%s, הקישו %d.'%(speakable(c),man['cats'][c]['i']))
           yput_text('ivr2:%s/ext.ini'%EXT,
-                    'type=menu\r\nsay_menu_voice=yes\r\ndigits=2\r\nmenu_voice='+' '.join(mv)+'\r\ntimeout=10\r\nM1001_say=yes\r\n')
+                    'type=menu\r\nsay_menu_voice=yes\r\ndigits=%d\r\nmenu_voice=%s\r\ntimeout=10\r\nM1001_say=yes\r\n'%(1 if len(order)<=9 else 2,' '.join(mv)))
           for c in order:
               ci=man['cats'][c]['i']; eps=sorted(up[c],key=lambda e:e['i'])
               mv=[speakable(c)+'.']
               for e in eps:
                   mv.append('ל%s, הקישו %d.'%(speakable(e['t']),e['i']))
               yput_text('ivr2:%s/%d/ext.ini'%(EXT,ci),
-                        'type=menu\r\nsay_menu_voice=yes\r\ndigits=2\r\nmenu_voice='+' '.join(mv)+'\r\ntimeout=10\r\nM1001_say=yes\r\n')
+                        'type=menu\r\nsay_menu_voice=yes\r\ndigits=%d\r\nmenu_voice=%s\r\ntimeout=10\r\nM1001_say=yes\r\n'%(1 if len(eps)<=9 else 2,' '.join(mv)))
           fid=put_json(fid,man)
           total=sum(1 for e in man['eps'].values() if e.get('up'))
           print('\nDone: pushed %d this run. On line now: %d in %d categories at %s'%(done,total,len(order),EXT),flush=True)
