@@ -31,6 +31,10 @@ on:
         description: "cap each video clip to N seconds (0 = keep full)"
         required: false
         default: "90"
+      crf:
+        description: "compression quality, higher = smaller (26 default)"
+        required: false
+        default: "26"
       label:
         description: "artifact name suffix"
         required: false
@@ -39,13 +43,21 @@ on:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Install ffmpeg
+        if: ${{ inputs.clip_seconds != '0' }}
+        run: |
+          # ubuntu-latest no longer ships ffmpeg preinstalled.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
 
       - name: Fetch
         run: |
@@ -61,18 +73,36 @@ jobs:
       - name: Shrink video before upload
         if: ${{ inputs.clip_seconds != '0' }}
         run: |
-          # הרשת של המפעיל סורקת כל הורדה ומגבילה ל-~120KB/s.
-          # ארטיפקט של 900MB = שעתיים. לכן מכווצים כאן, לא שם.
+          # The operator's network scans every download and caps it near
+          # 120 KB/s, so a 900 MB artifact costs two hours. Shrink here.
+          set -uo pipefail
           shopt -s nullglob
           before=$(du -sm out | cut -f1)
-          for f in out/*.mp4 out/*.m4v out/*.webm out/*.ogv; do
+          ok=0; bad=0
+          for f in out/*.mp4 out/*.m4v out/*.webm out/*.ogv out/*.mpg out/*.mpeg out/*.avi; do
             [ -f "$f" ] || continue
-            o="${f%.*}__c.mp4"
-            ffmpeg -v error -y -t "${{ inputs.clip_seconds }}" -i "$f"               -vf "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"               -c:v libx264 -preset veryfast -crf 26 -pix_fmt yuv420p               -c:a aac -b:a 128k -movflags +faststart "$o" && mv -f "$o" "${f%.*}.mp4"
-            [ "$f" != "${f%.*}.mp4" ] && rm -f "$f"
+            base="${f%.*}"
+            tmp="${base}__c.mp4"
+            if ffmpeg -v error -y -t "${{ inputs.clip_seconds }}" -i "$f" \
+                 -vf "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+                 -c:v libx264 -preset veryfast -crf "${{ inputs.crf }}" -pix_fmt yuv420p \
+                 -c:a aac -b:a 128k -movflags +faststart "$tmp"; then
+              rm -f "$f"
+              mv -f "$tmp" "${base}.mp4"
+              ok=$((ok+1))
+            else
+              rm -f "$tmp"
+              bad=$((bad+1))
+              echo "::warning::transcode failed for $f (kept original)"
+            fi
           done
           after=$(du -sm out | cut -f1)
-          echo "shrink: ${before}MB -> ${after}MB"
+          echo "shrink: ${before}MB -> ${after}MB   ok=$ok failed=$bad"
+          # Silence is not success: if nothing shrank, fail loudly.
+          if [ "$ok" -eq 0 ] && [ "$bad" -gt 0 ]; then
+            echo "::error::every transcode failed"
+            exit 1
+          fi
 
       - name: Listing
         run: |
