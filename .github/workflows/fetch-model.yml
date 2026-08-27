@@ -1,0 +1,54 @@
+name: Fetch a model the operator network blocks
+
+# huggingface.co answers, but its CDN (us.aws.cdn.hf.co) returns 418 to the
+# operator, so weights cannot be downloaded there. The runner pulls them and
+# hands them back as an artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "HF repo id"
+        required: true
+        default: "laion/CLIP-ViT-B-32-laion2B-s34B-b79K"
+      allow:
+        description: "comma separated filename patterns to keep"
+        required: false
+        default: "*.bin,*.json,*.txt,*.safetensors"
+      label:
+        description: "artifact suffix"
+        required: false
+        default: "clip"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download
+        env:
+          REPO: ${{ inputs.repo }}
+          ALLOW: ${{ inputs.allow }}
+        run: |
+          pip install -q huggingface_hub
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          pats = [p.strip() for p in os.environ["ALLOW"].split(",") if p.strip()]
+          p = snapshot_download(os.environ["REPO"], allow_patterns=pats,
+                                local_dir="model", local_dir_use_symlinks=False)
+          print("downloaded to", p)
+          PY
+          du -sh model
+          find model -type f -printf '%s\t%p\n' | sort -rn | head -20
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: model-${{ inputs.label }}
+          path: model/
+          retention-days: 7
+          compression-level: 0
