@@ -1,8 +1,16 @@
-name: Pixabay video fetch (clean IP -> artifact)
+name: Stock video fetch (Pixabay / Pexels, clean IP -> artifact)
 
 on:
   workflow_dispatch:
     inputs:
+      site:
+        description: "pixabay | pexels"
+        required: false
+        default: "pexels"
+      pages:
+        description: "pexels only: how many result pages per query"
+        required: false
+        default: "2"
       queries:
         description: "comma separated search terms"
         required: true
@@ -88,7 +96,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: pixvid-${{ inputs.label }}
+          name: stockvid-${{ inputs.label }}
           path: out/
           retention-days: 7
           compression-level: 0
