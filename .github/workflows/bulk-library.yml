@@ -81,24 +81,35 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
           df -h / | tail -1
 
+      # Inputs go through env, never through ${{ }} interpolated into the shell:
+      # a query containing quotes ("memorial candle") tore the command apart.
       - name: Probe collections
         if: ${{ inputs.probe == 'true' }}
+        env:
+          COLLECTIONS: ${{ inputs.collections }}
+          MEDIATYPE: ${{ inputs.mediatype }}
         run: |
           python tools/archive_bulk.py --probe \
-            --collections "${{ inputs.collections }}" \
-            --mediatype "${{ inputs.mediatype }}" --out out
+            --collections "$COLLECTIONS" --mediatype "$MEDIATYPE" --out out
 
       - name: Harvest
         if: ${{ inputs.probe != 'true' }}
+        env:
+          COLLECTIONS: ${{ inputs.collections }}
+          MEDIATYPE: ${{ inputs.mediatype }}
+          QUERY: ${{ inputs.query }}
+          PER: ${{ inputs.per }}
+          MAXMB: ${{ inputs.max_mb }}
+          NOFILTER: ${{ inputs.no_filter }}
         run: |
           EXTRA=""
-          if [ "${{ inputs.no_filter }}" = "true" ]; then EXTRA="--no-filter"; fi
+          if [ "$NOFILTER" = "true" ]; then EXTRA="--no-filter"; fi
           python tools/archive_bulk.py $EXTRA \
-            --collections "${{ inputs.collections }}" \
-            --mediatype "${{ inputs.mediatype }}" \
-            --query "${{ inputs.query }}" \
-            --per "${{ inputs.per }}" \
-            --max-mb "${{ inputs.max_mb }}" \
+            --collections "$COLLECTIONS" \
+            --mediatype "$MEDIATYPE" \
+            --query "$QUERY" \
+            --per "$PER" \
+            --max-mb "$MAXMB" \
             --out out
 
       - name: Normalise video
