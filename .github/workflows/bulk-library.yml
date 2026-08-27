@@ -47,8 +47,16 @@ on:
         description: "report collection sizes only, download nothing"
         required: false
         default: "false"
+      proxy_height:
+        description: "also build a low-res proxy set as an artifact (0 = off)"
+        required: false
+        default: "0"
+      proxy_seconds:
+        description: "cap each proxy clip to N seconds"
+        required: false
+        default: "45"
       also_artifact:
-        description: "also upload as artifact (only if small)"
+        description: "also upload the full files as artifact (only if small)"
         required: false
         default: "false"
 
@@ -129,6 +137,39 @@ jobs:
           CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
           REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
         run: python tools/drive_up.py out "${{ inputs.drive_folder }}"
+
+      - name: Build proxies for local editing
+        if: ${{ inputs.probe != 'true' && inputs.proxy_height != '0' }}
+        run: |
+          # The operator edits against these: the full files stay in Drive
+          # because pulling them over a 260 KB/s link would take hours.
+          set -uo pipefail
+          mkdir -p proxy
+          ok=0; bad=0
+          while IFS= read -r f; do
+            rel="${f#out/}"
+            o="proxy/${rel%.*}.mp4"
+            mkdir -p "$(dirname "$o")"
+            if ffmpeg -v error -y -t "${{ inputs.proxy_seconds }}" -i "$f" \
+                 -vf "scale=-2:${{ inputs.proxy_height }}" \
+                 -c:v libx264 -preset veryfast -crf 32 -pix_fmt yuv420p \
+                 -c:a aac -b:a 64k -ac 1 -movflags +faststart "$o"; then
+              ok=$((ok+1))
+            else
+              rm -f "$o"; bad=$((bad+1))
+            fi
+          done < <(find out -type f \( -name '*.mp4' -o -name '*.m4v' -o -name '*.webm' -o -name '*.ogv' -o -name '*.mpg' -o -name '*.mpeg' -o -name '*.avi' \))
+          cp out/MANIFEST.json proxy/ 2>/dev/null || true
+          echo "proxies: ok=$ok failed=$bad  size=$(du -sh proxy | cut -f1)"
+          if [ "$ok" -eq 0 ]; then echo "::error::no proxy produced"; exit 1; fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.probe != 'true' && inputs.proxy_height != '0' }}
+        with:
+          name: proxy-${{ inputs.drive_folder }}
+          path: proxy/
+          retention-days: 7
+          compression-level: 0
 
       - uses: actions/upload-artifact@v4
         if: ${{ inputs.also_artifact == 'true' }}
