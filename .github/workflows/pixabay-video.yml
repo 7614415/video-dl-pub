@@ -1,0 +1,94 @@
+name: Pixabay video fetch (clean IP -> artifact)
+
+on:
+  workflow_dispatch:
+    inputs:
+      queries:
+        description: "comma separated search terms"
+        required: true
+        default: "light leak,particles,bokeh,abstract background,smoke,clouds"
+      per:
+        description: "clips per query"
+        required: false
+        default: "14"
+      clip_seconds:
+        description: "cap each clip to N seconds (0 = keep full)"
+        required: false
+        default: "20"
+      crf:
+        description: "compression quality, higher = smaller"
+        required: false
+        default: "25"
+      label:
+        description: "artifact name suffix"
+        required: false
+        default: "pixabay"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Fetch from Pixabay
+        run: |
+          python tools/pixabay_video.py \
+            --queries "${{ inputs.queries }}" \
+            --per "${{ inputs.per }}" \
+            --out out
+
+      - name: Report source resolutions
+        run: |
+          echo "--- as downloaded ---"
+          find out -name '*.mp4' | while read f; do
+            printf '%-52s %s\n' "$(basename "$f" | cut -c1-52)" \
+              "$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$f")"
+          done | sort | head -80
+
+      - name: Shrink before upload
+        if: ${{ inputs.clip_seconds != '0' }}
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+          before=$(du -sm out | cut -f1)
+          ok=0; bad=0
+          while IFS= read -r f; do
+            tmp="${f%.*}__c.mp4"
+            if ffmpeg -v error -y -t "${{ inputs.clip_seconds }}" -i "$f" \
+                 -vf "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+                 -c:v libx264 -preset veryfast -crf "${{ inputs.crf }}" -pix_fmt yuv420p \
+                 -an -movflags +faststart "$tmp"; then
+              mv -f "$tmp" "$f"; ok=$((ok+1))
+            else
+              rm -f "$tmp"; bad=$((bad+1))
+              echo "::warning::transcode failed for $f"
+            fi
+          done < <(find out -name '*.mp4')
+          after=$(du -sm out | cut -f1)
+          echo "shrink: ${before}MB -> ${after}MB   ok=$ok failed=$bad"
+          if [ "$ok" -eq 0 ] && [ "$bad" -gt 0 ]; then
+            echo "::error::every transcode failed"; exit 1
+          fi
+
+      - name: Final listing
+        run: |
+          find out -name '*.mp4' | wc -l
+          du -sh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixvid-${{ inputs.label }}
+          path: out/
+          retention-days: 7
+          compression-level: 0
