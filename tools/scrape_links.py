@@ -86,7 +86,7 @@ def scrape(url):
     page = get(url)
     title = html.unescape(TITLE.search(page).group(1).strip()) if TITLE.search(page) else ""
     seen, out = set(), []
-    for raw in HREF.findall(page):
+    for raw in HREF.findall(page) + BARE.findall(page):
         u = html.unescape(raw)
         if u.startswith("/"):
             u = urllib.parse.urljoin(url, u)
