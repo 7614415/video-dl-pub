@@ -157,24 +157,55 @@ jobs:
 
       - name: Build proxies for local editing
         if: ${{ inputs.probe != 'true' && inputs.proxy_height != '0' }}
+        env:
+          PH: ${{ inputs.proxy_height }}
+          PSECS: ${{ inputs.proxy_seconds }}
         run: |
           # The operator edits against these: the full files stay in Drive
           # because pulling them over a 260 KB/s link would take hours.
+          #
+          # Sampled ACROSS the film, not from the head. Taking the first 60
+          # seconds of an archival film yields nothing but title cards - both
+          # "Death Mills" and "Nazi Concentration Camps" came back unusable
+          # that way, because their footage starts after the credits.
           set -uo pipefail
           mkdir -p proxy
           ok=0; bad=0
+          SLICES=6
           while IFS= read -r f; do
             rel="${f#out/}"
             o="proxy/${rel%.*}.mp4"
             mkdir -p "$(dirname "$o")"
-            if ffmpeg -v error -y -t "${{ inputs.proxy_seconds }}" -i "$f" \
-                 -vf "scale=-2:${{ inputs.proxy_height }}" \
-                 -c:v libx264 -preset veryfast -crf 32 -pix_fmt yuv420p \
-                 -c:a aac -b:a 64k -ac 1 -movflags +faststart "$o"; then
+            D=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$f" 2>/dev/null | cut -d. -f1)
+            [ -z "$D" ] && D=0
+            if [ "$D" -lt 90 ]; then
+              # short clip: keep it whole
+              ffmpeg -v error -y -t "$PSECS" -i "$f" -vf "scale=-2:$PH" \
+                -c:v libx264 -preset veryfast -crf 32 -pix_fmt yuv420p \
+                -an -movflags +faststart "$o" && ok=$((ok+1)) || { rm -f "$o"; bad=$((bad+1)); }
+              continue
+            fi
+            SEG=$(( PSECS / SLICES )); [ "$SEG" -lt 4 ] && SEG=4
+            tmpdir=$(mktemp -d); list="$tmpdir/l.txt"; : > "$list"
+            i=0
+            while [ "$i" -lt "$SLICES" ]; do
+              # spread from 8% to 88% of the running time
+              SS=$(( D * (8 + i * 16) / 100 ))
+              part="$tmpdir/p$i.mp4"
+              if ffmpeg -v error -y -ss "$SS" -t "$SEG" -i "$f" -vf "scale=-2:$PH" \
+                   -c:v libx264 -preset veryfast -crf 32 -pix_fmt yuv420p \
+                   -an "$part" 2>/dev/null; then
+                echo "file '$part'" >> "$list"
+              fi
+              i=$((i+1))
+            done
+            if [ -s "$list" ] && ffmpeg -v error -y -f concat -safe 0 -i "$list" \
+                 -c copy -movflags +faststart "$o"; then
               ok=$((ok+1))
             else
               rm -f "$o"; bad=$((bad+1))
             fi
+            rm -rf "$tmpdir"
           done < <(find out -type f \( -name '*.mp4' -o -name '*.m4v' -o -name '*.webm' -o -name '*.ogv' -o -name '*.mpg' -o -name '*.mpeg' -o -name '*.avi' \))
           cp out/MANIFEST.json proxy/ 2>/dev/null || true
           echo "proxies: ok=$ok failed=$bad  size=$(du -sh proxy | cut -f1)"
