@@ -41,6 +41,10 @@ HOSTS = {
 DIRECT = re.compile(r"\.(mp4|mov|mp3|wav|zip|rar|7z|aep|prproj|mogrt)(\?|$)", re.I)
 HREF = re.compile(r'href=["\']([^"\']+)["\']', re.I)
 TITLE = re.compile(r"<title>(.*?)</title>", re.I | re.S)
+# Forum posts keep their real download links inside spoiler blocks as plain
+# text rather than as anchors: scanning href= alone found 1 link on a page
+# that held 1126.
+BARE = re.compile(r"""https?://[^\s"'<>\\)\]]+""", re.I)
 
 
 def get(url, timeout=60):
