@@ -1,0 +1,119 @@
+name: Bulk media library (archive.org -> Drive)
+
+# Gigabytes must never travel through the operator's network: it scans every
+# download and caps it near 120 KB/s. The runner pulls from archive.org and
+# pushes straight to Drive, so the operator gets it at Google speed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      collections:
+        description: "archive.org collections, comma separated"
+        required: true
+        default: "prelinger,stock_footage"
+      mediatype:
+        description: "movies | audio"
+        required: false
+        default: "movies"
+      query:
+        description: "extra lucene filter (optional)"
+        required: false
+        default: ""
+      per:
+        description: "items per collection"
+        required: false
+        default: "25"
+      max_mb:
+        description: "skip source files larger than this"
+        required: false
+        default: "180"
+      clip_seconds:
+        description: "cap each video to N seconds (0 = keep full)"
+        required: false
+        default: "0"
+      crf:
+        description: "compression quality (higher = smaller)"
+        required: false
+        default: "24"
+      drive_folder:
+        description: "Drive folder name to create/use"
+        required: false
+        default: "stock-library"
+      also_artifact:
+        description: "also upload as artifact (only if small)"
+        required: false
+        default: "false"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          ffmpeg -version | head -1
+
+      - name: Free up disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          df -h / | tail -1
+
+      - name: Harvest
+        run: |
+          python tools/archive_bulk.py \
+            --collections "${{ inputs.collections }}" \
+            --mediatype "${{ inputs.mediatype }}" \
+            --query "${{ inputs.query }}" \
+            --per "${{ inputs.per }}" \
+            --max-mb "${{ inputs.max_mb }}" \
+            --out out
+
+      - name: Normalise video
+        if: ${{ inputs.mediatype == 'movies' && inputs.clip_seconds != '0' }}
+        run: |
+          set -uo pipefail
+          before=$(du -sm out | cut -f1)
+          ok=0; bad=0
+          while IFS= read -r f; do
+            tmp="${f%.*}__c.mp4"
+            if ffmpeg -v error -y -t "${{ inputs.clip_seconds }}" -i "$f" \
+                 -vf "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2" \
+                 -c:v libx264 -preset veryfast -crf "${{ inputs.crf }}" -pix_fmt yuv420p \
+                 -c:a aac -b:a 128k -movflags +faststart "$tmp"; then
+              rm -f "$f"; mv -f "$tmp" "${f%.*}.mp4"; ok=$((ok+1))
+            else
+              rm -f "$tmp"; bad=$((bad+1)); echo "::warning::transcode failed: $f"
+            fi
+          done < <(find out -type f \( -name '*.mp4' -o -name '*.m4v' -o -name '*.webm' -o -name '*.ogv' -o -name '*.mpg' -o -name '*.mpeg' -o -name '*.avi' \))
+          after=$(du -sm out | cut -f1)
+          echo "normalise: ${before}MB -> ${after}MB   ok=$ok failed=$bad"
+          if [ "$ok" -eq 0 ] && [ "$bad" -gt 0 ]; then
+            echo "::error::every transcode failed"; exit 1
+          fi
+
+      - name: Listing
+        run: |
+          find out -type f | wc -l
+          du -sh out
+
+      - name: Upload to Drive
+        env:
+          CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: python tools/drive_up.py out "${{ inputs.drive_folder }}"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.also_artifact == 'true' }}
+        with:
+          name: bulk-${{ inputs.drive_folder }}
+          path: out/
+          retention-days: 5
+          compression-level: 0
