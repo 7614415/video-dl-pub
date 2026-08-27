@@ -108,7 +108,31 @@ def main():
     ap.add_argument("--min-mb", type=float, default=1.0)
     ap.add_argument("--max-mb", type=float, default=180.0)
     ap.add_argument("--out", default="out")
+    ap.add_argument("--probe", action="store_true",
+                    help="report collection sizes and licence coverage, download nothing")
     a = ap.parse_args()
+
+    if a.probe:
+        # archive.org is unreachable from the operator's network, so the only
+        # way to learn what a collection actually holds is to ask from here.
+        for col in [c.strip() for c in a.collections.split(",") if c.strip()]:
+            try:
+                url = ("%s?q=%s&rows=0&output=json"
+                       % (SEARCH, urllib.parse.quote(
+                           "collection:(%s) AND mediatype:(%s)" % (col, a.mediatype))))
+                total = json.loads(get(url))["response"]["numFound"]
+                url2 = ("%s?q=%s&rows=0&output=json"
+                        % (SEARCH, urllib.parse.quote(
+                            "collection:(%s) AND mediatype:(%s) AND licenseurl:[* TO *]"
+                            % (col, a.mediatype))))
+                lic = json.loads(get(url2))["response"]["numFound"]
+            except Exception as e:
+                print("  %-20s ERROR %s" % (col, str(e)[:50]), flush=True)
+                continue
+            pd = col in PD_COLLECTIONS
+            print("  %-20s %8d items | %7d with licence | known-PD=%s"
+                  % (col, total, lic, pd), flush=True)
+        return
 
     exts = VIDEO_EXT if a.mediatype == "movies" else AUDIO_EXT
     manifest, skipped = [], 0
