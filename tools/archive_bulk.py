@@ -29,6 +29,15 @@ PD_COLLECTIONS = {"prelinger", "stock_footage", "publicmovies", "feature_films",
 VIDEO_EXT = (".mp4", ".m4v", ".webm", ".ogv", ".mpeg", ".mpg", ".avi")
 AUDIO_EXT = (".mp3", ".ogg", ".flac", ".wav", ".m4a")
 
+# A run for Holocaust footage pulled down "Holohoax Tales" and a Luciferian
+# conspiracy video. This blocklist is not about licences or taste - denial
+# material must never reach an educational film about the Holocaust, and the
+# operator asked for filtering to be off everywhere else.
+POISON = re.compile(
+    r"holohoax|hoax|denial|denier|revisionis|luciferian|illuminati|"
+    r"new world order|zionist conspiracy|protocols of zion|great replacement|"
+    r"white genocide|blood libel|flat earth|qanon", re.I)
+
 
 def get(url, timeout=90, tries=3):
     for a in range(tries):
@@ -63,6 +72,11 @@ def search(collection, extra, rows, mediatype, title_only=False):
     docs = d.get("response", {}).get("docs", [])
     print("collection %r -> %d items" % (collection, len(docs)), flush=True)
     return docs
+
+
+def poisoned(doc):
+    blob = "%s %s" % (doc.get("title") or "", doc.get("identifier") or "")
+    return bool(POISON.search(blob))
 
 
 def allowed(doc, collection, no_filter=False):
@@ -152,7 +166,7 @@ def main():
         return
 
     exts = VIDEO_EXT if a.mediatype == "movies" else AUDIO_EXT
-    manifest, skipped = [], 0
+    manifest, skipped, blocked = [], 0, 0
     os.makedirs(a.out, exist_ok=True)
     for col in [c.strip() for c in a.collections.split(",") if c.strip()]:
         d = os.path.join(a.out, safe(col))
@@ -166,6 +180,11 @@ def main():
         for doc in docs:
             if got >= a.per:
                 break
+            if poisoned(doc):
+                print("   BLOCKED (denial/conspiracy): %s"
+                      % str(doc.get("title"))[:60], flush=True)
+                blocked += 1
+                continue
             if not allowed(doc, col, a.no_filter):
                 skipped += 1
                 continue
@@ -188,8 +207,8 @@ def main():
     json.dump(manifest, open(os.path.join(a.out, "MANIFEST.json"), "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
     total = sum(x["size_mb"] for x in manifest)
-    print("DONE: %d files, %.1f MB (skipped %d rights-unclear items)"
-          % (len(manifest), total, skipped), flush=True)
+    print("DONE: %d files, %.1f MB (skipped %d rights-unclear, blocked %d denial/conspiracy)"
+          % (len(manifest), total, skipped, blocked), flush=True)
     if not manifest:
         sys.exit("nothing downloaded")
 
