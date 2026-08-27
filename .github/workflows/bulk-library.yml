@@ -39,6 +39,10 @@ on:
         description: "Drive folder name to create/use"
         required: false
         default: "stock-library"
+      no_filter:
+        description: "take every result, do not require a clear licence"
+        required: false
+        default: "false"
       probe:
         description: "report collection sizes only, download nothing"
         required: false
@@ -79,7 +83,9 @@ jobs:
       - name: Harvest
         if: ${{ inputs.probe != 'true' }}
         run: |
-          python tools/archive_bulk.py \
+          EXTRA=""
+          if [ "${{ inputs.no_filter }}" = "true" ]; then EXTRA="--no-filter"; fi
+          python tools/archive_bulk.py $EXTRA \
             --collections "${{ inputs.collections }}" \
             --mediatype "${{ inputs.mediatype }}" \
             --query "${{ inputs.query }}" \

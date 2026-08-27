@@ -44,7 +44,12 @@ def get(url, timeout=90, tries=3):
 
 
 def search(collection, extra, rows, mediatype):
-    q = "collection:(%s) AND mediatype:(%s)" % (collection, mediatype)
+    # collection "*" searches the whole archive, driven by --query alone.
+    # Needed for subject hunts ("warsaw ghetto") that span many collections.
+    if collection.strip() in ("*", "all", "any"):
+        q = "mediatype:(%s)" % mediatype
+    else:
+        q = "collection:(%s) AND mediatype:(%s)" % (collection, mediatype)
     if extra:
         q += " AND (%s)" % extra
     url = ("%s?q=%s&fl%%5B%%5D=identifier&fl%%5B%%5D=title&fl%%5B%%5D=year"
@@ -57,7 +62,12 @@ def search(collection, extra, rows, mediatype):
     return docs
 
 
-def allowed(doc, collection):
+def allowed(doc, collection, no_filter=False):
+    # The licence filter skipped 226 of 240 items on its first real run, so the
+    # operator turned it off. Source and licence stay in MANIFEST.json either
+    # way, so anything published from this library can still be traced back.
+    if no_filter:
+        return True
     if doc.get("licenseurl"):
         return True
     cols = doc.get("collection") or []
@@ -108,6 +118,8 @@ def main():
     ap.add_argument("--min-mb", type=float, default=1.0)
     ap.add_argument("--max-mb", type=float, default=180.0)
     ap.add_argument("--out", default="out")
+    ap.add_argument("--no-filter", action="store_true",
+                    help="take every result, do not require a clear licence")
     ap.add_argument("--probe", action="store_true",
                     help="report collection sizes and licence coverage, download nothing")
     a = ap.parse_args()
@@ -149,7 +161,7 @@ def main():
         for doc in docs:
             if got >= a.per:
                 break
-            if not allowed(doc, col):
+            if not allowed(doc, col, a.no_filter):
                 skipped += 1
                 continue
             try:
