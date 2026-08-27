@@ -39,6 +39,10 @@ on:
         description: "Drive folder name to create/use"
         required: false
         default: "stock-library"
+      probe:
+        description: "report collection sizes only, download nothing"
+        required: false
+        default: "false"
       also_artifact:
         description: "also upload as artifact (only if small)"
         required: false
@@ -65,7 +69,15 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
           df -h / | tail -1
 
+      - name: Probe collections
+        if: ${{ inputs.probe == 'true' }}
+        run: |
+          python tools/archive_bulk.py --probe \
+            --collections "${{ inputs.collections }}" \
+            --mediatype "${{ inputs.mediatype }}" --out out
+
       - name: Harvest
+        if: ${{ inputs.probe != 'true' }}
         run: |
           python tools/archive_bulk.py \
             --collections "${{ inputs.collections }}" \
@@ -76,7 +88,7 @@ jobs:
             --out out
 
       - name: Normalise video
-        if: ${{ inputs.mediatype == 'movies' && inputs.clip_seconds != '0' }}
+        if: ${{ inputs.probe != 'true' && inputs.mediatype == 'movies' && inputs.clip_seconds != '0' }}
         run: |
           set -uo pipefail
           before=$(du -sm out | cut -f1)
@@ -99,11 +111,13 @@ jobs:
           fi
 
       - name: Listing
+        if: ${{ inputs.probe != 'true' }}
         run: |
           find out -type f | wc -l
           du -sh out
 
       - name: Upload to Drive
+        if: ${{ inputs.probe != 'true' }}
         env:
           CLIENT_ID: ${{ secrets.DRIVE_CLIENT_ID }}
           CLIENT_SECRET: ${{ secrets.DRIVE_CLIENT_SECRET }}
