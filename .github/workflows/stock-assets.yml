@@ -1,0 +1,67 @@
+name: Stock assets fetch (blocked sources -> artifact)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "archive | mixkit | urls"
+        required: true
+        default: "archive"
+      query:
+        description: "search query (archive/mixkit)"
+        required: false
+        default: ""
+      count:
+        description: "how many files"
+        required: false
+        default: "20"
+      mediatype:
+        description: "archive only: movies | audio"
+        required: false
+        default: "movies"
+      kind:
+        description: "mixkit only: audio | video"
+        required: false
+        default: "audio"
+      urls:
+        description: "urls source: newline separated direct links"
+        required: false
+        default: ""
+      label:
+        description: "artifact name suffix"
+        required: false
+        default: "batch"
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch
+        run: |
+          python tools/stock_fetch.py \
+            --source "${{ inputs.source }}" \
+            --query "${{ inputs.query }}" \
+            --count "${{ inputs.count }}" \
+            --mediatype "${{ inputs.mediatype }}" \
+            --kind "${{ inputs.kind }}" \
+            --urls "${{ inputs.urls }}" \
+            --out out
+
+      - name: Listing
+        run: |
+          ls -lh out | head -60
+          du -sh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stock-${{ inputs.label }}
+          path: out/
+          retention-days: 7
+          compression-level: 0
