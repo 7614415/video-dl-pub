@@ -65,6 +65,23 @@ def classify(u):
     return None
 
 
+def diagnose(page):
+    """Why a page yields nothing is usually not 'no links' but 'not logged in'."""
+    low = page.lower()
+    marks = {
+        "login_wall": any(k in low for k in (
+            "must be registered", "log in or register", "להתחבר", "הרשמה",
+            "you must be logged in", 'name="login"')),
+        "xenforo": "xenforo" in low,
+        "cloudflare": "cf-browser-verification" in low or "just a moment" in low,
+        "post_bodies": low.count("bbwrapper") + low.count("message-body"),
+        "spoilers": low.count("bbcodespoiler") + low.count("bbcodeblock"),
+        "chars": len(page),
+        "all_href": low.count("href="),
+    }
+    return marks
+
+
 def scrape(url):
     page = get(url)
     title = html.unescape(TITLE.search(page).group(1).strip()) if TITLE.search(page) else ""
@@ -101,8 +118,9 @@ def main():
             print("FAILED %s -> %s" % (u[:70], str(e)[:70]), flush=True)
             md += ["## FAILED: %s" % u, "`%s`" % str(e)[:120], ""]
             continue
-        print("%-60s %d links" % (title[:60], len(links)), flush=True)
-        report.append(dict(page=u, title=title, links=links))
+        diag = diagnose(get(u))
+        print("%-52s %d links | %s" % (title[:52], len(links), diag), flush=True)
+        report.append(dict(page=u, title=title, links=links, diagnostics=diag))
         md += ["## %s" % title, "<%s>" % u, ""]
         by = {}
         for l in links:
