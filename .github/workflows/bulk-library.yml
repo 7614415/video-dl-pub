@@ -43,6 +43,10 @@ on:
         description: "take every result, do not require a clear licence"
         required: false
         default: "false"
+      title_only:
+        description: "match the query against titles only (much less junk)"
+        required: false
+        default: "true"
       probe:
         description: "report collection sizes only, download nothing"
         required: false
@@ -101,9 +105,11 @@ jobs:
           PER: ${{ inputs.per }}
           MAXMB: ${{ inputs.max_mb }}
           NOFILTER: ${{ inputs.no_filter }}
+          TITLEONLY: ${{ inputs.title_only }}
         run: |
           EXTRA=""
-          if [ "$NOFILTER" = "true" ]; then EXTRA="--no-filter"; fi
+          if [ "$NOFILTER" = "true" ]; then EXTRA="$EXTRA --no-filter"; fi
+          if [ "$TITLEONLY" = "true" ]; then EXTRA="$EXTRA --title-only"; fi
           python tools/archive_bulk.py $EXTRA \
             --collections "$COLLECTIONS" \
             --mediatype "$MEDIATYPE" \

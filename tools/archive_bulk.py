@@ -43,7 +43,7 @@ def get(url, timeout=90, tries=3):
             time.sleep(3 * (a + 1))
 
 
-def search(collection, extra, rows, mediatype):
+def search(collection, extra, rows, mediatype, title_only=False):
     # collection "*" searches the whole archive, driven by --query alone.
     # Needed for subject hunts ("warsaw ghetto") that span many collections.
     if collection.strip() in ("*", "all", "any"):
@@ -51,10 +51,13 @@ def search(collection, extra, rows, mediatype):
     else:
         q = "collection:(%s) AND mediatype:(%s)" % (collection, mediatype)
     if extra:
-        q += " AND (%s)" % extra
+        q += " AND %s(%s)" % ("title:" if title_only else "", extra)
+    # No downloads sort. Sorting an OR query by popularity surfaced Benny Hill
+    # and a 9/11 broadcast for a query about synagogues: the loosest match wins
+    # on downloads. Relevance ordering (the default) keeps the topic.
     url = ("%s?q=%s&fl%%5B%%5D=identifier&fl%%5B%%5D=title&fl%%5B%%5D=year"
            "&fl%%5B%%5D=licenseurl&fl%%5B%%5D=collection"
-           "&rows=%d&page=1&output=json&sort%%5B%%5D=downloads+desc"
+           "&rows=%d&page=1&output=json"
            % (SEARCH, urllib.parse.quote(q), rows))
     d = json.loads(get(url))
     docs = d.get("response", {}).get("docs", [])
@@ -120,6 +123,8 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--no-filter", action="store_true",
                     help="take every result, do not require a clear licence")
+    ap.add_argument("--title-only", action="store_true",
+                    help="match the query against titles instead of full text")
     ap.add_argument("--probe", action="store_true",
                     help="report collection sizes and licence coverage, download nothing")
     a = ap.parse_args()
@@ -153,7 +158,7 @@ def main():
         d = os.path.join(a.out, safe(col))
         os.makedirs(d, exist_ok=True)
         try:
-            docs = search(col, a.query, a.per * 3, a.mediatype)
+            docs = search(col, a.query, a.per * 3, a.mediatype, a.title_only)
         except Exception as e:
             print("  search failed for %r: %s" % (col, str(e)[:70]), flush=True)
             continue
