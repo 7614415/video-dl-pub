@@ -1633,7 +1633,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: pull YouTube's own free auto-captions for scheduled videos, use them to write a real title+description
+      - name: pick up locally-written title+description (from real transcripts) and push them to YouTube
         env:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
           DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
@@ -1641,26 +1641,23 @@ jobs:
           YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CAPTIONS_DEBUG: "eePLyK6siN8"
         run: |
           python3 - <<'PY'
-          # Yosef's idea (08/09/2026): don't transcribe locally (heavy, could crash the PC) -
-          # YouTube already generates free, solid auto-captions on every upload. A video is
-          # scheduled ~1 day ahead (see upload_ready_videos), which gives plenty of time for
-          # YouTube's auto-captions to finish before it actually publishes. So on every daily
-          # run: for each still-private/scheduled video not yet refined, try to pull its
-          # Hebrew auto-caption track via the public timedtext endpoint, and if it's there,
-          # ask Gemini (Claude has no API key wired into this repo's cloud secrets, so Gemini
-          # is the sanctioned fallback here per Yosef's own "AI ראשי=Claude, Gemini רק
-          # כ-fallback" rule) to turn the actual transcript into a real title + description,
-          # replacing the raw Kol HaLashon title. Captions aren't always ready immediately -
-          # retry for a few days, then give up gracefully and keep the original title.
+          # No Gemini here (08/09/2026 - Yosef: "Gemini עולה כסף", correctly caught that I'd
+          # slipped into using it for this). The actual transcript-to-title/description writing
+          # happens locally, by Claude itself (the nightly scheduled agent task, which runs
+          # under Yosef's own Claude Code session - no separate paid API call at all), which
+          # reads the real transcript (fetched via yt-dlp - see fetch_captions_local.py; the
+          # only piece that genuinely needed a residential IP, since NetFree blocks
+          # googleapis.com/youtube locally but allows www.youtube.com, and yt-dlp itself is
+          # bot-blocked from GitHub Actions datacenter IPs) and writes a real title+description
+          # from it, saving both as "<video_id>.json" in Drive's "_תמלולים" folder. This job's
+          # only work is: check for such a file per still-unrefined video, and if present, push
+          # it to YouTube via videos.update (that part works fine from Actions).
           import os, json, re, html, urllib.request, urllib.error, urllib.parse
 
           DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
           YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
-          GEMINI_KEY = os.environ.get("GEMINI_KEY")
           ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
           MANIFEST_NAME = "_youtube_uploaded.json"
           MAX_ATTEMPTS = 6
@@ -1688,6 +1685,19 @@ jobs:
                   "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"}, method="PUT")
               return json.load(urllib.request.urlopen(req, timeout=60))
 
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
 
           q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
           r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
@@ -1695,6 +1705,7 @@ jobs:
               print("no drive folder yet")
               raise SystemExit(0)
           root_id = r["files"][0]["id"]
+          root_children = list_children(root_id)
           q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
           mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
           if not mf.get("files"):
@@ -1714,102 +1725,35 @@ jobs:
                   headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
               urllib.request.urlopen(req, timeout=60)
 
-          def vtt_to_text(raw):
-              # YouTube's auto-generated VTT uses rolling/karaoke-style cues where each block
-              # repeats most of the previous block's text plus a few new words - naive
-              # line-joining produces a transcript with everything said 2-3x over. Dedup by
-              # tracking the last emitted line and only keeping the new suffix when a block
-              # starts with it (verified 08/09/2026 against a real 336KB auto-caption file -
-              # collapsed correctly to a clean, non-repeating transcript).
-              blocks = re.split(r"\n\s*\n", raw)
-              out, last_line = [], ""
-              for b in blocks:
-                  b_lines = [l for l in b.split("\n") if l.strip()]
-                  b_lines = [l for l in b_lines if "-->" not in l and not l.strip().isdigit()
-                             and l.strip() != "WEBVTT" and not l.startswith("Kind:") and not l.startswith("Language:")]
-                  if not b_lines:
-                      continue
-                  text = html.unescape(re.sub(r"<[^>]+>", "", " ".join(b_lines)))
-                  text = re.sub(r"\s+", " ", text).strip()
-                  if not text or text == last_line:
-                      continue
-                  if last_line and text.startswith(last_line):
-                      addition = text[len(last_line):].strip()
-                      if addition:
-                          out.append(addition)
-                  else:
-                      out.append(text)
-                  last_line = text
-              return re.sub(r"\s+", " ", " ".join(out)).strip()
+          # Caption text is NOT fetched from here (08/09/2026, after 3 failed attempts):
+          # yt-dlp is bot-blocked from Actions IPs ("Sign in to confirm you're not a bot"),
+          # captions.list (official API) is 403 for non-CMS accounts even as the owner, and
+          # scraping the watch page's captionTracks baseUrl gets valid-looking metadata but
+          # an EMPTY body when actually fetched (YouTube seems to require a real innertube
+          # session negotiation that a simple GET doesn't satisfy). What DOES work: a small
+          # local script (`fetch_captions_local.py`, runs nightly on Yosef's own machine
+          # where NetFree allows www.youtube.com and yt-dlp isn't bot-blocked) fetches the
+          # real transcript and uploads it as a plain .txt file to Drive's "_תמלולים" folder.
+          # This job just reads whatever's there - Drive/YouTube-API/Gemini all work fine
+          # from Actions, only the caption fetch itself needed a residential IP.
+          TRANSCRIPTS_FOLDER_NAME = "_תמלולים"
+          _transcripts_folder = next((f for f in root_children if f["name"] == TRANSCRIPTS_FOLDER_NAME), None)
+          _transcripts_by_video = {}
+          if _transcripts_folder:
+              for f in list_children(_transcripts_folder["id"]):
+                  if f["name"].endswith(".txt"):
+                      _transcripts_by_video[f["name"][:-4]] = f["id"]
 
           def fetch_captions_text(video_id):
-              # yt-dlp tried first (08/09/2026) - failed 100% of the time from GitHub Actions
-              # with "Sign in to confirm you're not a bot" (YouTube bot-detects yt-dlp's own
-              # innertube/player-API request pattern from datacenter IPs; worked fine locally
-              # from a residential IP). captions.list (official API) is 403 for non-CMS
-              # accounts even as the owner. What DOES work from Actions: a single plain GET of
-              # the public watch page (no bot-check triggered - verified repeatedly today) to
-              # scrape the real, signed "captionTracks" baseUrl straight out of the page's own
-              # player-response JSON, then fetch THAT exact URL directly - no extra API calls.
-              dbg = os.environ.get("CAPTIONS_DEBUG") == video_id
-              try:
-                  req = urllib.request.Request(
-                      "https://www.youtube.com/watch?v=%s" % video_id,
-                      headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
-                               "Accept-Language": "en-US,en;q=0.9"})
-                  watch_html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
-                  if dbg:
-                      print("CAPDBG htmlLen=%d has_captionTracks_literal=%s" % (
-                          len(watch_html), '"captionTracks"' in watch_html), flush=True)
-                  m = re.search(r'"captionTracks":(\[.*?\])(?=,"(?:audioTracks|translationLanguages)"|\})', watch_html)
-                  if not m:
-                      if dbg:
-                          idx = watch_html.find('"captionTracks"')
-                          print("CAPDBG regex_no_match, raw_around_literal=%r" % (watch_html[idx:idx+300] if idx >= 0 else None), flush=True)
-                      return None
-                  tracks = json.loads(m.group(1).replace("\\u0026", "&"))
-                  if dbg:
-                      print("CAPDBG tracks_found=%d langs=%s" % (len(tracks), [t.get("languageCode") for t in tracks]), flush=True)
-                  track = next((t for t in tracks if t.get("languageCode") in ("iw", "he")), tracks[0] if tracks else None)
-                  if not track:
-                      return None
-                  cap_url = track["baseUrl"]
-                  cap_url = re.sub(r"fmt=[^&]*", "fmt=vtt", cap_url) if "fmt=" in cap_url else cap_url + "&fmt=vtt"
-                  req2 = urllib.request.Request(cap_url, headers={"User-Agent": "Mozilla/5.0"})
-                  vtt_raw = urllib.request.urlopen(req2, timeout=30).read().decode("utf-8", "replace")
-                  if dbg:
-                      print("CAPDBG vtt_raw_len=%d" % len(vtt_raw), flush=True)
-                  if not vtt_raw.strip():
-                      return None
-                  text = vtt_to_text(vtt_raw)
-                  if dbg:
-                      print("CAPDBG final_text_len=%d" % len(text), flush=True)
-                  return text if len(text) > 200 else None
-              except Exception as e:
-                  if dbg:
-                      print("CAPDBG EXCEPTION %r" % (e,), flush=True)
+              file_id = _transcripts_by_video.get(video_id)
+              if not file_id:
                   return None
-              except Exception:
-                  return None
-
-          def gemini_title_and_description(transcript, fallback_title):
-              prompt = (
-                  "זהו תמלול אוטומטי (לא מושלם) של שיעור תורה בעברית של הרב אבשלום שניידר. "
-                  "על סמך התוכן בפועל, כתוב:\n"
-                  "1. כותרת קצרה וקולעת בעברית (עד 90 תווים), שמשקפת את הנושא האמיתי של השיעור.\n"
-                  "2. תיאור בן 3-4 משפטים בעברית שמסכם במדויק על מה מדובר בשיעור, בלשון ברורה וכבודה.\n"
-                  "החזר אך ורק JSON תקין בפורמט: {\"title\": \"...\", \"description\": \"...\"}\n\n"
-                  "כותרת גולמית (לגיבוי אם התמלול לא ברור): %s\n\nתמלול:\n%s"
-              ) % (fallback_title, transcript[:12000])
-              body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
               req = urllib.request.Request(
-                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY,
-                  data=body, headers={"Content-Type": "application/json"})
-              resp = json.load(urllib.request.urlopen(req, timeout=60))
-              text_out = resp["candidates"][0]["content"]["parts"][0]["text"]
-              text_out = re.sub(r"^```json\s*|\s*```$", "", text_out.strip())
-              obj = json.loads(text_out)
-              return obj["title"].strip(), obj["description"].strip()
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              obj = json.load(urllib.request.urlopen(req, timeout=30))
+              title, description = obj.get("title"), obj.get("description")
+              return (title, description) if title and description else None
 
           checked, refined, failed = 0, 0, 0
           for fid, info in manifest.items():
@@ -1822,11 +1766,11 @@ jobs:
               checked += 1
               info["refine_attempts"] = attempts + 1
               try:
-                  transcript = fetch_captions_text(vid)
-                  if not transcript:
-                      print("  [%s] no captions yet (attempt %d/%d)" % (vid, attempts + 1, MAX_ATTEMPTS), flush=True)
+                  result = fetch_captions_text(vid)
+                  if not result:
+                      print("  [%s] not refined yet (attempt %d/%d)" % (vid, attempts + 1, MAX_ATTEMPTS), flush=True)
                       continue
-                  title, description = gemini_title_and_description(transcript, info.get("title", ""))
+                  title, description = result
                   cur = yt_get("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=%s" % vid)
                   items = cur.get("items", [])
                   if not items:
