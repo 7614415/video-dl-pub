@@ -1633,8 +1633,6 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: install yt-dlp
-        run: pip install --quiet yt-dlp
       - name: pull YouTube's own free auto-captions for scheduled videos, use them to write a real title+description
         env:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
@@ -1644,7 +1642,6 @@ jobs:
           YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CAPTIONS_DEBUG: "1"
         run: |
           python3 - <<'PY'
           # Yosef's idea (08/09/2026): don't transcribe locally (heavy, could crash the PC) -
@@ -1658,7 +1655,7 @@ jobs:
           # כ-fallback" rule) to turn the actual transcript into a real title + description,
           # replacing the raw Kol HaLashon title. Captions aren't always ready immediately -
           # retry for a few days, then give up gracefully and keep the original title.
-          import os, json, re, html, urllib.request, urllib.error, urllib.parse, subprocess, tempfile, glob
+          import os, json, re, html, urllib.request, urllib.error, urllib.parse
 
           DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
           YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
@@ -1716,14 +1713,13 @@ jobs:
                   headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
               urllib.request.urlopen(req, timeout=60)
 
-          def vtt_to_text(vtt_path):
+          def vtt_to_text(raw):
               # YouTube's auto-generated VTT uses rolling/karaoke-style cues where each block
               # repeats most of the previous block's text plus a few new words - naive
               # line-joining produces a transcript with everything said 2-3x over. Dedup by
               # tracking the last emitted line and only keeping the new suffix when a block
               # starts with it (verified 08/09/2026 against a real 336KB auto-caption file -
               # collapsed correctly to a clean, non-repeating transcript).
-              raw = open(vtt_path, encoding="utf-8", errors="replace").read()
               blocks = re.split(r"\n\s*\n", raw)
               out, last_line = [], ""
               for b in blocks:
@@ -1746,33 +1742,37 @@ jobs:
               return re.sub(r"\s+", " ", " ".join(out)).strip()
 
           def fetch_captions_text(video_id):
-              # captions.list/download (official API) is 403 for non-CMS accounts even as the
-              # owner (verified 08/09/2026) - yt-dlp handles YouTube's real (signed, expiring)
-              # caption URLs itself and is far more robust than hand-building a timedtext URL.
-              with tempfile.TemporaryDirectory() as tmpdir:
-                  try:
-                      cp = subprocess.run([
-                          "python3", "-m", "yt_dlp",
-                          "--write-auto-sub", "--skip-download",
-                          "--sub-lang", "iw,he",
-                          "--sub-format", "vtt",
-                          "-o", os.path.join(tmpdir, "cap_%(id)s"),
-                          "https://www.youtube.com/watch?v=%s" % video_id,
-                      ], timeout=90, capture_output=True)
-                      if os.environ.get("CAPTIONS_DEBUG"):
-                          print("YTDLP_DEBUG %s rc=%s stdout_tail=%r stderr_tail=%r" % (
-                              video_id, cp.returncode,
-                              cp.stdout.decode("utf-8", "replace")[-400:],
-                              cp.stderr.decode("utf-8", "replace")[-400:]), flush=True)
-                  except Exception as e:
-                      if os.environ.get("CAPTIONS_DEBUG"):
-                          print("YTDLP_DEBUG %s EXCEPTION %r" % (video_id, e), flush=True)
+              # yt-dlp tried first (08/09/2026) - failed 100% of the time from GitHub Actions
+              # with "Sign in to confirm you're not a bot" (YouTube bot-detects yt-dlp's own
+              # innertube/player-API request pattern from datacenter IPs; worked fine locally
+              # from a residential IP). captions.list (official API) is 403 for non-CMS
+              # accounts even as the owner. What DOES work from Actions: a single plain GET of
+              # the public watch page (no bot-check triggered - verified repeatedly today) to
+              # scrape the real, signed "captionTracks" baseUrl straight out of the page's own
+              # player-response JSON, then fetch THAT exact URL directly - no extra API calls.
+              try:
+                  req = urllib.request.Request(
+                      "https://www.youtube.com/watch?v=%s" % video_id,
+                      headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                               "Accept-Language": "en-US,en;q=0.9"})
+                  watch_html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+                  m = re.search(r'"captionTracks":(\[.*?\])(?=,"(?:audioTracks|translationLanguages)"|\})', watch_html)
+                  if not m:
                       return None
-                  vtts = glob.glob(os.path.join(tmpdir, "*.vtt"))
-                  if not vtts:
+                  tracks = json.loads(m.group(1).replace("\\u0026", "&"))
+                  track = next((t for t in tracks if t.get("languageCode") in ("iw", "he")), tracks[0] if tracks else None)
+                  if not track:
                       return None
-                  text = vtt_to_text(vtts[0])
+                  cap_url = track["baseUrl"]
+                  cap_url = re.sub(r"fmt=[^&]*", "fmt=vtt", cap_url) if "fmt=" in cap_url else cap_url + "&fmt=vtt"
+                  req2 = urllib.request.Request(cap_url, headers={"User-Agent": "Mozilla/5.0"})
+                  vtt_raw = urllib.request.urlopen(req2, timeout=30).read().decode("utf-8", "replace")
+                  if not vtt_raw.strip():
+                      return None
+                  text = vtt_to_text(vtt_raw)
                   return text if len(text) > 200 else None
+              except Exception:
+                  return None
 
           def gemini_title_and_description(transcript, fallback_title):
               prompt = (
