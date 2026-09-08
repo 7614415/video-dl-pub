@@ -1642,6 +1642,7 @@ jobs:
           YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
           GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CAPTIONS_DEBUG: "eePLyK6siN8"
         run: |
           python3 - <<'PY'
           # Yosef's idea (08/09/2026): don't transcribe locally (heavy, could crash the PC) -
@@ -1750,16 +1751,25 @@ jobs:
               # the public watch page (no bot-check triggered - verified repeatedly today) to
               # scrape the real, signed "captionTracks" baseUrl straight out of the page's own
               # player-response JSON, then fetch THAT exact URL directly - no extra API calls.
+              dbg = os.environ.get("CAPTIONS_DEBUG") == video_id
               try:
                   req = urllib.request.Request(
                       "https://www.youtube.com/watch?v=%s" % video_id,
                       headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
                                "Accept-Language": "en-US,en;q=0.9"})
                   watch_html = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+                  if dbg:
+                      print("CAPDBG htmlLen=%d has_captionTracks_literal=%s" % (
+                          len(watch_html), '"captionTracks"' in watch_html), flush=True)
                   m = re.search(r'"captionTracks":(\[.*?\])(?=,"(?:audioTracks|translationLanguages)"|\})', watch_html)
                   if not m:
+                      if dbg:
+                          idx = watch_html.find('"captionTracks"')
+                          print("CAPDBG regex_no_match, raw_around_literal=%r" % (watch_html[idx:idx+300] if idx >= 0 else None), flush=True)
                       return None
                   tracks = json.loads(m.group(1).replace("\\u0026", "&"))
+                  if dbg:
+                      print("CAPDBG tracks_found=%d langs=%s" % (len(tracks), [t.get("languageCode") for t in tracks]), flush=True)
                   track = next((t for t in tracks if t.get("languageCode") in ("iw", "he")), tracks[0] if tracks else None)
                   if not track:
                       return None
@@ -1767,10 +1777,18 @@ jobs:
                   cap_url = re.sub(r"fmt=[^&]*", "fmt=vtt", cap_url) if "fmt=" in cap_url else cap_url + "&fmt=vtt"
                   req2 = urllib.request.Request(cap_url, headers={"User-Agent": "Mozilla/5.0"})
                   vtt_raw = urllib.request.urlopen(req2, timeout=30).read().decode("utf-8", "replace")
+                  if dbg:
+                      print("CAPDBG vtt_raw_len=%d" % len(vtt_raw), flush=True)
                   if not vtt_raw.strip():
                       return None
                   text = vtt_to_text(vtt_raw)
+                  if dbg:
+                      print("CAPDBG final_text_len=%d" % len(text), flush=True)
                   return text if len(text) > 200 else None
+              except Exception as e:
+                  if dbg:
+                      print("CAPDBG EXCEPTION %r" % (e,), flush=True)
+                  return None
               except Exception:
                   return None
 
