@@ -2037,15 +2037,20 @@ jobs:
 
           import re
 
+          # v4 (08/09/2026): יוסף ביקש עוד רקעים "באותו סגנון" של הציפורים-בשקיעה -
+          # אופק/שקיעה/טבע רגוע, לא עוד אש/נר (זה היה מהעיצוב הישן שננטש). Pixabay
+          # מוסר (403 גם מהענן, מתועד) - לא בטרחה יותר איתו.
           MIXKIT_PAGES = [
-              ("fire", "https://mixkit.co/free-stock-video/fire/"),
-              ("ocean", "https://mixkit.co/free-stock-video/ocean/"),
-              ("light", "https://mixkit.co/free-stock-video/light/"),
-              ("candle", "https://mixkit.co/free-stock-video/candle/"),
               ("sunset", "https://mixkit.co/free-stock-video/sunset/"),
-              ("pixabay_fire", "https://pixabay.com/videos/search/loop%20fire/"),
-              ("pixabay_flame", "https://pixabay.com/videos/search/flame%20transparent/"),
-              ("pixabay_ocean", "https://pixabay.com/videos/search/ocean%20loop/"),
+              ("sunrise", "https://mixkit.co/free-stock-video/sunrise/"),
+              ("sky", "https://mixkit.co/free-stock-video/sky/"),
+              ("clouds", "https://mixkit.co/free-stock-video/clouds/"),
+              ("beach", "https://mixkit.co/free-stock-video/beach/"),
+              ("ocean", "https://mixkit.co/free-stock-video/ocean/"),
+              ("mountains", "https://mixkit.co/free-stock-video/mountains/"),
+              ("nature", "https://mixkit.co/free-stock-video/nature/"),
+              ("desert", "https://mixkit.co/free-stock-video/desert/"),
+              ("stars", "https://mixkit.co/free-stock-video/stars/"),
           ]
 
           def fetch_html(url):
