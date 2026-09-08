@@ -31,6 +31,10 @@ on:
         description: "Set to 1 to fetch the chosen ocean clip at FULL (non-downscaled) resolution and upload to Drive"
         required: false
         default: "0"
+      fetch_full_bg_multi:
+        description: "Set to 1 to fetch the 10 chosen style backgrounds (sunset/sunrise/sky/clouds/beach/ocean/mountains/nature/desert/stars) at full resolution, grade+loop each, upload to Drive folder _רקעים_לפי_סגנון"
+        required: false
+        default: "0"
       publish_existing:
         description: "Set to 1 to flip every already-uploaded video + playlist from unlisted to public (one-off, run after making the channel public)"
         required: false
@@ -2188,6 +2192,135 @@ jobs:
                           raise
                       sent = end + 1
           print("uploaded full-res seamless bg to Drive, replacing old:", bool(old_id))
+          PY
+
+  fetch_full_bg_multi:
+    if: github.event.inputs.fetch_full_bg_multi == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: fetch 10 chosen style clips at full resolution, grade, build seamless loops, upload
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, subprocess, urllib.request, urllib.parse, urllib.error
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          BGSTYLE_FOLDER_NAME = "_רקעים_לפי_סגנון"
+
+          # v4 (09/09/2026): יוסף ביקש עוד רקעים "באותו סגנון" (אופק/שקיעה/טבע רגוע) לגיוון
+          # בין קטגוריות (לא כולם אותו קליפ ציפורים-בשקיעה). נבחר קליפ אחד לכל אחד מ-10 הסגנונות
+          # שנסרקו ב-fetch_bg_candidates, לפי הרזולוציה הגבוהה ביותר הזמינה שיש לו מזהה-מספרי נקי
+          # (חלק מהמועמדים ב-mixkit יש להם "-video-" באמצע השם, לא נבנה מהם URL באופן חד-משמעי).
+          PICKS = {
+              "sunset": "https://assets.mixkit.co/videos/40657/40657-1080.mp4",
+              "sunrise": "https://assets.mixkit.co/videos/4831/4831-1080.mp4",
+              "sky": "https://assets.mixkit.co/videos/1926/1926-1080.mp4",
+              "clouds": "https://assets.mixkit.co/videos/4695/4695-1080.mp4",
+              "beach": "https://assets.mixkit.co/videos/44496/44496-1080.mp4",
+              "ocean": "https://assets.mixkit.co/videos/44392/44392-1080.mp4",
+              "mountains": "https://assets.mixkit.co/videos/51689/51689-1080.mp4",
+              "nature": "https://assets.mixkit.co/videos/4075/4075-1080.mp4",
+              "desert": "https://assets.mixkit.co/videos/4048/4048-1080.mp4",
+              "stars": "https://assets.mixkit.co/videos/1610/1610-1080.mp4",
+          }
+          GRADE = "eq=contrast=1.05:saturation=1.2,colorbalance=rs=0.05:bs=0.12:rm=0.1:gm=-0.02:bm=-0.1:rh=0.12:gh=0.02:bh=-0.08"
+
+          body = urllib.parse.urlencode({
+              "client_id": DCID, "client_secret": DCSEC,
+              "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+          DT = json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def drive_post(url, obj):
+              req = urllib.request.Request(url, data=json.dumps(obj).encode(), headers={
+                  "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          root_id = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")["files"][0]["id"]
+
+          q2 = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false and '%s' in parents" % (BGSTYLE_FOLDER_NAME, root_id)
+          existing_folder = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          style_folder_id = existing_folder["files"][0]["id"] if existing_folder.get("files") else drive_post(
+              "https://www.googleapis.com/drive/v3/files",
+              {"name": BGSTYLE_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder", "parents": [root_id]})["id"]
+
+          def upload_to_drive(local_path, name, parent):
+              size = os.path.getsize(local_path)
+              q3 = "name='%s' and trashed=false and '%s' in parents" % (name, parent)
+              existing = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q3) + "&fields=files(id,name)")
+              old_id = existing["files"][0]["id"] if existing.get("files") else None
+              if old_id:
+                  meta_url = "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=resumable" % old_id
+                  method_meta = "PATCH"
+                  meta = json.dumps({"name": name}).encode()
+              else:
+                  meta_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+                  method_meta = "POST"
+                  meta = json.dumps({"name": name, "parents": [parent]}).encode()
+              req = urllib.request.Request(meta_url, meta, {
+                  "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8",
+                  "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)}, method=method_meta)
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open(local_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=300)
+                          json.load(resp)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              raise
+                          sent = end + 1
+
+          ok, failed = 0, 0
+          for style, url in PICKS.items():
+              try:
+                  for f in ("full.mp4", "graded.mp4", "seamless.mp4"):
+                      if os.path.exists(f):
+                          os.remove(f)
+                  subprocess.run(["curl", "-sL", "-A", "Mozilla/5.0", "-o", "full.mp4", "--max-time", "180", url], check=True)
+                  sz = os.path.getsize("full.mp4")
+                  print(style, "downloaded", sz, "bytes", flush=True)
+                  if sz < 200_000:
+                      raise RuntimeError("too small, likely blocked/missing")
+                  subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", "full.mp4", "-vf", GRADE,
+                                  "-an", "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "graded.mp4"], check=True, timeout=180)
+                  dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                               "-of", "csv=p=0", "graded.mp4"], capture_output=True, text=True, check=True).stdout.strip())
+                  x = 1.5
+                  filt = (
+                      "[0:v]trim=start=0:end=%.3f,setpts=PTS-STARTPTS[vstart];"
+                      "[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS[vend];"
+                      "[vend][vstart]xfade=transition=fade:duration=%.3f:offset=0[xf];"
+                      "[0:v]trim=start=%.3f:end=%.3f,setpts=PTS-STARTPTS[mid];"
+                      "[xf][mid]concat=n=2:v=1:a=0[outv]"
+                  ) % (x, dur - x, dur, x, x, dur - x)
+                  subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", "graded.mp4", "-filter_complex", filt,
+                                  "-map", "[outv]", "-c:v", "libx264", "-preset", "fast", "-pix_fmt", "yuv420p", "seamless.mp4"], check=True, timeout=180)
+                  upload_to_drive("seamless.mp4", style + ".mp4", style_folder_id)
+                  print(style, "-> uploaded seamless loop", flush=True)
+                  ok += 1
+              except Exception as e:
+                  print(style, "-> FAILED:", e, flush=True)
+                  failed += 1
+
+          print("fetch_full_bg_multi done: ok=%d failed=%d" % (ok, failed), flush=True)
           PY
 
   publish_existing:
