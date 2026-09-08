@@ -963,7 +963,7 @@ jobs:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
           DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
           DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
-          LIMIT: ${{ github.event.inputs.frames_limit || '20' }}
+          LIMIT: ${{ github.event.inputs.frames_limit || '60' }}
         run: |
           python3 - <<'PY'
           import os, json, re, urllib.request, urllib.error, urllib.parse
@@ -1316,7 +1316,7 @@ jobs:
           YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
-          LIMIT: ${{ github.event.inputs.ready_upload_limit || '6' }}
+          LIMIT: ${{ github.event.inputs.ready_upload_limit || '15' }}
         run: |
           python3 - <<'PY'
           import os, json, re, urllib.request, urllib.error, urllib.parse
@@ -1577,59 +1577,22 @@ jobs:
                           sent = end + 1
               return video_id
 
-          # sequential daily publish schedule, never on Shabbat (Saturday) - state (the next
-          # free slot) is kept in Drive so it survives across runs/days.
+          # Yosef reconsidered (08/09/2026): no more 1/day throttle - "as fast as possible,
+          # no daily limit at all". Publish (almost) immediately on upload; the only real
+          # pacing left is YouTube's own upload quota (~6/day), not anything we impose. The
+          # one hard rule that stays is never Shabbat - if "now" lands on a Saturday, push to
+          # Sunday morning. Videos processed in the same run are spread a few minutes apart
+          # (not days) just so they don't all technically go live in the same instant.
           import datetime
-          SCHEDULE_STATE_NAME = "_publish_schedule_state.json"
-          _sched_existing = next((f for f in root_children if f["name"] == SCHEDULE_STATE_NAME), None)
-          _sched_state_id = _sched_existing["id"] if _sched_existing else None
-          if _sched_state_id:
-              req = urllib.request.Request(
-                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % _sched_state_id,
-                  headers={"Authorization": "Bearer " + DT})
-              _sched_state = json.load(urllib.request.urlopen(req, timeout=30))
-          else:
-              _sched_state = {}
-          _today = datetime.date.today()
-          _next_date = datetime.date.fromisoformat(_sched_state["next_date"]) if _sched_state.get("next_date") else _today + datetime.timedelta(days=1)
-          if _next_date <= _today:
-              _next_date = _today + datetime.timedelta(days=1)
-
-          def save_schedule_state():
-              body = json.dumps(_sched_state).encode()
-              global _sched_state_id
-              if _sched_state_id:
-                  req = urllib.request.Request(
-                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % _sched_state_id,
-                      data=body, method="PATCH",
-                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
-                  urllib.request.urlopen(req, timeout=30)
-              else:
-                  meta = json.dumps({"name": SCHEDULE_STATE_NAME, "parents": [root_id]}).encode()
-                  boundary = "xxxxKolHalashonBoundaryxxxx"
-                  multipart = (
-                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
-                      + meta + b"\r\n"
-                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
-                      + body + ("\r\n--%s--" % boundary).encode()
-                  )
-                  req = urllib.request.Request(
-                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
-                      data=multipart,
-                      headers={"Authorization": "Bearer " + DT,
-                               "Content-Type": "multipart/related; boundary=" + boundary})
-                  resp = json.load(urllib.request.urlopen(req, timeout=30))
-                  _sched_state_id = resp["id"]
+          _next_slot = [datetime.datetime.utcnow() + datetime.timedelta(minutes=10)]
 
           def next_publish_slot():
-              global _next_date
-              while _next_date.weekday() == 5:  # Saturday = Shabbat, skip it entirely
-                  _next_date += datetime.timedelta(days=1)
-              slot = _next_date
-              _next_date = _next_date + datetime.timedelta(days=1)
-              _sched_state["next_date"] = _next_date.isoformat()
-              save_schedule_state()
-              return slot.isoformat() + "T06:00:00Z"  # ~08-09 Israel time depending on DST
+              while _next_slot[0].weekday() == 5:  # Saturday = Shabbat, skip to Sunday morning
+                  _next_slot[0] = datetime.datetime.combine(
+                      _next_slot[0].date() + datetime.timedelta(days=1), datetime.time(4, 0))
+              slot = _next_slot[0]
+              _next_slot[0] = slot + datetime.timedelta(minutes=15)
+              return slot.strftime("%Y-%m-%dT%H:%M:%SZ")
 
           todo = [f for f in ready_children if f["id"] not in manifest][:LIMIT]
           print("videos ready in drive=%d, to upload this run=%d" % (len(ready_children), len(todo)))
