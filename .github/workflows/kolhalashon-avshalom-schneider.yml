@@ -1633,6 +1633,8 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
+      - name: install yt-dlp
+        run: pip install --quiet yt-dlp
       - name: pull YouTube's own free auto-captions for scheduled videos, use them to write a real title+description
         env:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
@@ -1655,7 +1657,7 @@ jobs:
           # כ-fallback" rule) to turn the actual transcript into a real title + description,
           # replacing the raw Kol HaLashon title. Captions aren't always ready immediately -
           # retry for a few days, then give up gracefully and keep the original title.
-          import os, json, re, html, urllib.request, urllib.error, urllib.parse
+          import os, json, re, html, urllib.request, urllib.error, urllib.parse, subprocess, tempfile, glob
 
           DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
           YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
@@ -1713,23 +1715,56 @@ jobs:
                   headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
               urllib.request.urlopen(req, timeout=60)
 
-          def fetch_captions_text(video_id):
-              for lang in ("iw", "he"):
-                  try:
-                      url = "https://www.youtube.com/api/timedtext?lang=%s&v=%s&fmt=vtt" % (lang, video_id)
-                      req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                      raw = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
-                      if not raw.strip():
-                          continue
-                      lines = [l for l in raw.split("\n")
-                               if l.strip() and "-->" not in l and not l.startswith("WEBVTT") and not l.strip().isdigit()]
-                      text = html.unescape(re.sub(r"<[^>]+>", "", " ".join(lines)))
-                      text = re.sub(r"\s+", " ", text).strip()
-                      if len(text) > 200:
-                          return text
-                  except Exception:
+          def vtt_to_text(vtt_path):
+              # YouTube's auto-generated VTT uses rolling/karaoke-style cues where each block
+              # repeats most of the previous block's text plus a few new words - naive
+              # line-joining produces a transcript with everything said 2-3x over. Dedup by
+              # tracking the last emitted line and only keeping the new suffix when a block
+              # starts with it (verified 08/09/2026 against a real 336KB auto-caption file -
+              # collapsed correctly to a clean, non-repeating transcript).
+              raw = open(vtt_path, encoding="utf-8", errors="replace").read()
+              blocks = re.split(r"\n\s*\n", raw)
+              out, last_line = [], ""
+              for b in blocks:
+                  b_lines = [l for l in b.split("\n") if l.strip()]
+                  b_lines = [l for l in b_lines if "-->" not in l and not l.strip().isdigit()
+                             and l.strip() != "WEBVTT" and not l.startswith("Kind:") and not l.startswith("Language:")]
+                  if not b_lines:
                       continue
-              return None
+                  text = html.unescape(re.sub(r"<[^>]+>", "", " ".join(b_lines)))
+                  text = re.sub(r"\s+", " ", text).strip()
+                  if not text or text == last_line:
+                      continue
+                  if last_line and text.startswith(last_line):
+                      addition = text[len(last_line):].strip()
+                      if addition:
+                          out.append(addition)
+                  else:
+                      out.append(text)
+                  last_line = text
+              return re.sub(r"\s+", " ", " ".join(out)).strip()
+
+          def fetch_captions_text(video_id):
+              # captions.list/download (official API) is 403 for non-CMS accounts even as the
+              # owner (verified 08/09/2026) - yt-dlp handles YouTube's real (signed, expiring)
+              # caption URLs itself and is far more robust than hand-building a timedtext URL.
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  try:
+                      subprocess.run([
+                          "python3", "-m", "yt_dlp",
+                          "--write-auto-sub", "--skip-download",
+                          "--sub-lang", "iw,he",
+                          "--sub-format", "vtt",
+                          "-o", os.path.join(tmpdir, "cap_%(id)s"),
+                          "https://www.youtube.com/watch?v=%s" % video_id,
+                      ], check=True, timeout=90, capture_output=True)
+                  except Exception:
+                      return None
+                  vtts = glob.glob(os.path.join(tmpdir, "*.vtt"))
+                  if not vtts:
+                      return None
+                  text = vtt_to_text(vtts[0])
+                  return text if len(text) > 200 else None
 
           def gemini_title_and_description(transcript, fallback_title):
               prompt = (
