@@ -35,6 +35,10 @@ on:
         description: "Set to 1 to flip every already-uploaded video + playlist from unlisted to public (one-off, run after making the channel public)"
         required: false
         default: "0"
+      relay_clean_assets:
+        description: "Set to 1 to fetch logo/font assets fresh from GitHub and drop them into Drive (workaround for local-only image corruption when fetching directly)"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -2310,4 +2314,77 @@ jobs:
                       print("  playlist FAILED:", pl["snippet"]["title"], e, flush=True)
 
           print("publish_existing done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
+
+  relay_clean_assets:
+    if: github.event.inputs.relay_clean_assets == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: fetch repo assets fresh (no NetFree in the way here) and drop them straight into Drive
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          AUTH="Authorization: token $GH_TOKEN"
+          curl -sL -H "$AUTH" -o logo_text.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-logo-text.png"
+          curl -sL -H "$AUTH" -o logo_flame.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-flame-icon.png"
+          curl -sL -H "$AUTH" -o Heebo-ExtraBold.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/Heebo-ExtraBold.ttf"
+          ls -la logo_text.png logo_flame.png Heebo-ExtraBold.ttf
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          RELAY_FOLDER_NAME = "_נכסים_נקיים_זמני"
+
+          body = urllib.parse.urlencode({"client_id": DCID, "client_secret": DCSEC, "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+          DT = json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          root_id = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")["files"][0]["id"]
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, RELAY_FOLDER_NAME)
+          existing = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          if existing.get("files"):
+              folder_id = existing["files"][0]["id"]
+          else:
+              body2 = json.dumps({"name": RELAY_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder", "parents": [root_id]}).encode()
+              req = urllib.request.Request("https://www.googleapis.com/drive/v3/files", data=body2,
+                                            headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              folder_id = json.load(urllib.request.urlopen(req, timeout=30))["id"]
+
+          def upload(local_path, name, mime):
+              size = os.path.getsize(local_path)
+              meta = json.dumps({"name": name, "parents": [folder_id]}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+                  meta, {"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": mime, "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open(local_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          urllib.request.urlopen(put, timeout=120)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              raise
+                          sent = end + 1
+              print("uploaded:", name)
+
+          upload("logo_text.png", "logo_text.png", "image/png")
+          upload("logo_flame.png", "logo_flame.png", "image/png")
+          upload("Heebo-ExtraBold.ttf", "Heebo-ExtraBold.ttf", "font/ttf")
+          print("relay_clean_assets done")
           PY
