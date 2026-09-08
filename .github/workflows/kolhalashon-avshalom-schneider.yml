@@ -1741,8 +1741,8 @@ jobs:
           _transcripts_by_video = {}
           if _transcripts_folder:
               for f in list_children(_transcripts_folder["id"]):
-                  if f["name"].endswith(".txt"):
-                      _transcripts_by_video[f["name"][:-4]] = f["id"]
+                  if f["name"].endswith(".json"):
+                      _transcripts_by_video[f["name"][:-5]] = f["id"]
 
           def fetch_captions_text(video_id):
               file_id = _transcripts_by_video.get(video_id)
