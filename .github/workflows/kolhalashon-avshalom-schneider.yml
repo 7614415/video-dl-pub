@@ -1,0 +1,2361 @@
+name: Kol HaLashon - Rav Avshalom Schneider archive
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max new lessons to download this run"
+        required: false
+        default: "350"
+      youtube_limit:
+        description: "Max videos to upload to YouTube this run (YouTube quota allows ~6/day)"
+        required: false
+        default: "5"
+      manual_video_limit:
+        description: "Max mp4 files to prepare in Drive for manual upload (does not touch YouTube API)"
+        required: false
+        default: "0"
+      frames_limit:
+        description: "Max background-image frames (Gemini + frame + caption, no video) to prepare in Drive for local ffmpeg rendering"
+        required: false
+        default: "0"
+      ready_upload_limit:
+        description: "Max locally-rendered finished mp4s (from the 'מוכן להעלאה ליוטיוב' Drive folder) to upload to YouTube this run"
+        required: false
+        default: "0"
+      fetch_bg_candidates:
+        description: "Set to 1 to search archive.org for candidate looping background video clips and upload short previews to Drive"
+        required: false
+        default: "0"
+      fetch_full_bg:
+        description: "Set to 1 to fetch the chosen ocean clip at FULL (non-downscaled) resolution and upload to Drive"
+        required: false
+        default: "0"
+      publish_existing:
+        description: "Set to 1 to flip every already-uploaded video + playlist from unlisted to public (one-off, run after making the channel public)"
+        required: false
+        default: "0"
+  schedule:
+    - cron: "0 3 * * *"   # 06:00 Israel
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    outputs:
+      items: ${{ steps.scan.outputs.items }}
+      count: ${{ steps.scan.outputs.count }}
+      target_folder: ${{ steps.scan.outputs.target_folder }}
+    steps:
+      - id: scan
+        env:
+          CID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          RTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          LIMIT: ${{ github.event.inputs.limit }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse, re
+
+          CID, CSEC, RTOK = os.environ["CID"], os.environ["CSEC"], os.environ["RTOK"]
+          LIMIT = int(os.environ.get("LIMIT") or 350)
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+
+          def token():
+              body = urllib.parse.urlencode({
+                  "client_id": CID, "client_secret": CSEC,
+                  "refresh_token": RTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          T = token()
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + T})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def drive_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + T,
+                  "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          # find or create the target Drive folder
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if r.get("files"):
+              root_id = r["files"][0]["id"]
+              print("folder exists:", root_id)
+          else:
+              root_id = drive_post("https://www.googleapis.com/drive/v3/files",
+                                    {"name": ROOT_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder"})["id"]
+              print("folder created:", root_id)
+
+          # existing files already archived (dedup by FileId embedded in filename as [12345].mp3)
+          have_ids = set()
+          pt = None
+          while True:
+              u = ("https://www.googleapis.com/drive/v3/files?q="
+                   + urllib.parse.quote("'%s' in parents and trashed=false" % root_id)
+                   + "&fields=files(id,name),nextPageToken&pageSize=1000")
+              if pt:
+                  u += "&pageToken=" + pt
+              r = drive_get(u)
+              for f in r.get("files", []):
+                  m = re.search(r"\[(\d+)\]\.mp3$", f["name"])
+                  if m:
+                      have_ids.add(int(m.group(1)))
+              pt = r.get("nextPageToken")
+              if not pt:
+                  break
+          print("already archived:", len(have_ids))
+
+          # enumerate all lessons from Kol HaLashon's public search API (no login needed)
+          all_shiurim = []
+          from_row = 0
+          page = 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              all_shiurim.extend(batch)
+              from_row += page
+              if len(batch) < page:
+                  break
+          print("total lessons on kolhalashon:", len(all_shiurim))
+
+          def safe(s):
+              return re.sub(r'[\\/:*?"<>|]', "_", s)[:120]
+
+          def clean_title(t):
+              # some Kol HaLashon records still carry the original recorder auto-filename
+              # (e.g. "REC_0000098") glued onto the front of an otherwise-fine Hebrew title.
+              return re.sub(r'^REC_\d+\s*', '', t or '').strip()
+
+          todo = []
+          for s in all_shiurim:
+              fid = s["FileId"]
+              if fid in have_ids:
+                  continue
+              date = (s.get("RecordDate") or "")[:10]
+              title = safe(clean_title(s.get("TitleHebrew")) or str(fid))
+              category = safe(s.get("CatDesc1") or "כללי")
+              out_name = "%s - %s [%d].mp3" % (date, title, fid)
+              todo.append({"id": str(fid), "out": out_name, "category": category})
+
+          print("new to download:", len(todo))
+          todo = todo[:LIMIT]
+          for t in todo:
+              print("  ->", t["out"])
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write("items=" + json.dumps(todo, ensure_ascii=False) + "\n")
+              fh.write("count=%d\n" % len(todo))
+              fh.write("target_folder=%s\n" % root_id)
+          PY
+
+  download:
+    needs: list
+    if: needs.list.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - name: download shard from Kol HaLashon + upload to Drive
+        env:
+          CID: ${{ secrets.DRIVE_CLIENT_ID }}
+          CSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          RTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          ITEMS_JSON: ${{ needs.list.outputs.items }}
+          SHARD: ${{ matrix.shard }}
+          NUM_SHARDS: 8
+          TARGET_FOLDER: ${{ needs.list.outputs.target_folder }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse, time
+
+          CID, CSEC, RTOK = os.environ["CID"], os.environ["CSEC"], os.environ["RTOK"]
+          ITEMS = json.loads(os.environ["ITEMS_JSON"])
+          SHARD = int(os.environ["SHARD"])
+          N = int(os.environ["NUM_SHARDS"])
+          TARGET_FOLDER = os.environ["TARGET_FOLDER"]
+          MINE = ITEMS[SHARD::N]
+          print("shard %d/%d: %d files" % (SHARD, N, len(MINE)), flush=True)
+
+          def token():
+              body = urllib.parse.urlencode({
+                  "client_id": CID, "client_secret": CSEC,
+                  "refresh_token": RTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          def download_one(file_id):
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/files/GetMp3FileToPlay/%s" % file_id,
+                  headers={
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/playShiur/%s" % file_id,
+                      "Origin": "https://www.kolhalashon.com"})
+              with urllib.request.urlopen(req, timeout=300) as r, open("shiur.mp3", "wb") as fh:
+                  while True:
+                      chunk = r.read(1 << 22)
+                      if not chunk:
+                          break
+                      fh.write(chunk)
+              return os.path.getsize("shiur.mp3")
+
+          def upload_one(out_name, size, tok):
+              meta = json.dumps({"name": out_name, "parents": [TARGET_FOLDER]}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+                  meta, {"Authorization": "Bearer " + tok,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": "audio/mpeg",
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open("shiur.mp3", "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=300)
+                          json.load(resp)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              print(e.read().decode("utf-8", "replace")[:500])
+                              raise
+                          sent = end + 1
+
+          T = token()
+          ok, failed = 0, 0
+          for i, item in enumerate(MINE):
+              fid, out_name = item["id"], item["out"]
+              for attempt in range(3):
+                  try:
+                      size = download_one(fid)
+                      if size < 20000:
+                          raise RuntimeError("mp3 suspiciously small: %d bytes" % size)
+                      upload_one(out_name, size, T)
+                      print("[%d/%d] OK %s (%.1f MB)" % (i + 1, len(MINE), out_name, size / 1048576), flush=True)
+                      ok += 1
+                      break
+                  except Exception as e:
+                      print("[%d/%d] attempt %d failed for %s: %s" % (i + 1, len(MINE), attempt + 1, out_name, e), flush=True)
+                      time.sleep(5)
+                      if attempt == 2:
+                          failed += 1
+                      if attempt == 1:
+                          T = token()
+          print("shard %d done: ok=%d failed=%d" % (SHARD, ok, failed), flush=True)
+          if failed:
+              print("::warning::%d file(s) permanently unavailable on Kol HaLashon's server (not a pipeline bug)" % failed)
+          PY
+
+  upload_youtube:
+    needs: download
+    if: always() && needs.list.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: install python deps
+        run: pip install --quiet pillow python-bidi arabic-reshaper
+      - name: download background image + fonts
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          AUTH="Authorization: token $GH_TOKEN"
+          mkdir -p fonts
+          curl -sL -H "$AUTH" -o background_fallback.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-avshalom-background.png"
+          curl -sL -H "$AUTH" -o fonts/FrankRuhlLibre-Bold.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/FrankRuhlLibre-Bold.ttf"
+          curl -sL -H "$AUTH" -o fonts/FrankRuhlLibre-Medium.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/FrankRuhlLibre-Medium.ttf"
+          curl -sL -H "$AUTH" -o fonts/Rubik-Medium.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/Rubik-Medium.ttf"
+      - name: convert new mp3s to video and upload to YouTube
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LIMIT: ${{ github.event.inputs.youtube_limit }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, subprocess, urllib.request, urllib.error, urllib.parse, base64
+          from PIL import Image, ImageDraw, ImageFont
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          GEMINI_KEY = os.environ.get("GEMINI_KEY")
+          LIMIT = int(os.environ.get("LIMIT") or 5)
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+
+          # Self-contained RTL flip (no bidi/arabic_reshaper/raqm dependency, so behavior is
+          # identical on every platform): reverses Hebrew but keeps Latin/digit runs forward,
+          # and mirrors paired brackets. Proven in an earlier video pipeline (2026-08-26).
+          _LTR = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-/:]*")
+          def rtl(s):
+              toks, i = [], 0
+              for m in _LTR.finditer(s):
+                  if m.start() > i:
+                      toks += list(s[i:m.start()])
+                  toks.append(m.group(0))
+                  i = m.end()
+              if i < len(s):
+                  toks += list(s[i:])
+              flip = {'(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{'}
+              toks = [flip.get(t, t) if len(t) == 1 else t for t in toks]
+              return "".join(reversed(toks))
+
+          def gen_background(title):
+              """Generate a unique AI background image themed on the lesson title. Falls back to the fixed image on any failure."""
+              try:
+                  prompt = (
+                      "Create a serene, elegant abstract background image for a Jewish Torah lecture video. "
+                      "Warm deep-navy and gold color palette, soft lighting, wide 16:9 cinematic composition, "
+                      "high quality digital art. Symbolic/thematic elements only related to this lecture topic: "
+                      f'"{title}". Absolutely no readable text, no letters, no human faces or figures.'
+                  )
+                  body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+                  req = urllib.request.Request(
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=" + GEMINI_KEY,
+                      data=body, headers={"Content-Type": "application/json"})
+                  resp = urllib.request.urlopen(req, timeout=60)
+                  data = json.load(resp)
+                  for p in data["candidates"][0]["content"]["parts"]:
+                      if "inlineData" in p:
+                          raw = base64.b64decode(p["inlineData"]["data"])
+                          img = Image.open(__import__("io").BytesIO(raw)).convert("RGB")
+                          return img.resize((1280, 720))
+              except Exception as e:
+                  print("  (gemini background failed, using fallback:", e, ")", flush=True)
+              return Image.open("background_fallback.png").convert("RGB").resize((1280, 720))
+
+          def add_caption(img, title):
+              """Overlay a polished gold-framed caption card (title + credit) onto the AI-generated background."""
+              img = img.convert("RGBA")
+              W, H = img.size
+              gold = (196, 164, 90)
+
+              # ornamental double frame with corner flourishes, matching channel branding
+              draw = ImageDraw.Draw(img, "RGBA")
+              outer, inner = 26, 34
+              draw.rectangle([outer, outer, W - outer, H - outer], outline=(*gold, 230), width=2)
+              draw.rectangle([inner, inner, W - inner, H - inner], outline=(*gold, 110), width=1)
+
+              def corner(cx, cy, sx, sy):
+                  draw.line([(cx, cy), (cx + 46 * sx, cy)], fill=(*gold, 220), width=3)
+                  draw.line([(cx, cy), (cx, cy + 46 * sy)], fill=(*gold, 220), width=3)
+                  draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(*gold, 255))
+              corner(outer, outer, 1, 1); corner(W - outer, outer, -1, 1)
+              corner(outer, H - outer, 1, -1); corner(W - outer, H - outer, -1, -1)
+
+              # dark gradient card behind the title, for legibility over any background
+              card_top = H - 195
+              overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+              od = ImageDraw.Draw(overlay)
+              for y in range(card_top, H - 55):
+                  a = int(185 * (y - card_top) / (H - 55 - card_top))
+                  od.line([(60, y), (W - 60, y)], fill=(6, 8, 16, a))
+              img = Image.alpha_composite(img, overlay)
+              draw = ImageDraw.Draw(img, "RGBA")
+
+              title_font = ImageFont.truetype("fonts/FrankRuhlLibre-Bold.ttf", 42, layout_engine=ImageFont.Layout.BASIC)
+              credit_font = ImageFont.truetype("fonts/Rubik-Medium.ttf", 24, layout_engine=ImageFont.Layout.BASIC)
+
+              def center(text, font, y, fill, shadow=True):
+                  t = rtl(text)
+                  bbox = draw.textbbox((0, 0), t, font=font)
+                  w = bbox[2] - bbox[0]
+                  x = (W - w) / 2
+                  if shadow:
+                      draw.text((x + 2, y + 2), t, font=font, fill=(0, 0, 0, 140))
+                  draw.text((x, y), t, font=font, fill=fill)
+
+              # wrap long titles onto two lines at a space near the middle
+              t = title
+              if len(t) > 46:
+                  mid = len(t) // 2
+                  sp = t.rfind(" ", 0, mid)
+                  sp = sp if sp != -1 else t.find(" ", mid)
+                  lines = [t[:sp], t[sp+1:]] if sp != -1 else [t]
+              else:
+                  lines = [t]
+
+              y = H - (170 if len(lines) > 1 else 150)
+              for line in lines:
+                  center(line, title_font, y, (245, 238, 222))
+                  y += 52
+
+              # decorative divider + credit line
+              dy = H - 62
+              draw.line([(W/2 - 110, dy), (W/2 - 24, dy)], fill=(*gold, 200), width=2)
+              draw.ellipse([W/2 - 5, dy - 5, W/2 + 5, dy + 5], fill=(*gold, 255))
+              draw.line([(W/2 + 24, dy), (W/2 + 110, dy)], fill=(*gold, 200), width=2)
+              center("הרב אבשלום שניידר - מכון להב מפיו יצא", credit_font, H - 42, gold, shadow=False)
+              return img.convert("RGB")
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              try:
+                  return json.load(urllib.request.urlopen(
+                      "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+              except urllib.error.HTTPError as e:
+                  err = e.read().decode("utf-8", "replace")
+                  if "invalid_grant" in err:
+                      print("::error::YouTube refresh token expired (Testing mode = 7 day lifetime). "
+                            "Re-run the OAuth consent flow with Yosef and update YOUTUBE_REFRESH_TOKEN secret.")
+                  raise
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+
+          def drive_get(url, tok=None):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + (tok or DT)})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          # find the Drive root folder
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet, nothing to upload")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+
+          # list all mp3s in the folder
+          files = []
+          pt = None
+          while True:
+              u = ("https://www.googleapis.com/drive/v3/files?q="
+                   + urllib.parse.quote("'%s' in parents and trashed=false" % root_id)
+                   + "&fields=files(id,name),nextPageToken&pageSize=1000")
+              if pt:
+                  u += "&pageToken=" + pt
+              r = drive_get(u)
+              files.extend(r.get("files", []))
+              pt = r.get("nextPageToken")
+              if not pt:
+                  break
+          by_name = {f["name"]: f for f in files}
+
+          # load (or init) the upload manifest
+          manifest = {}
+          manifest_file_id = None
+          if MANIFEST_NAME in by_name:
+              manifest_file_id = by_name[MANIFEST_NAME]["id"]
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          print("already on youtube:", len(manifest))
+
+          mp3s = [f for f in files if f["name"].lower().endswith(".mp3")]
+          todo = [f for f in mp3s if f["id"] not in manifest]
+          print("mp3 total=%d, new for youtube=%d" % (len(mp3s), len(todo)))
+          todo = todo[:LIMIT]
+
+          def parse_name(name):
+              m = re.match(r"^(\d{4}-\d{2}-\d{2}) - (.+) \[(\d+)\]\.mp3$", name)
+              if not m:
+                  return None, name.rsplit(".", 1)[0]
+              return m.group(1), m.group(2)
+
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def download_from_drive(file_id, out_path):
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              with urllib.request.urlopen(req, timeout=300) as r, open(out_path, "wb") as fh:
+                  while True:
+                      chunk = r.read(1 << 22)
+                      if not chunk:
+                          break
+                      fh.write(chunk)
+
+          def get_duration(path):
+              out = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                   "-of", "csv=p=0", path],
+                  capture_output=True, text=True, timeout=30, check=True
+              ).stdout.strip()
+              return float(out)
+
+          def make_video(mp3_path, image_path, out_path):
+              # Use an explicit -t (from ffprobe) instead of -shortest: some mp3 files have a
+              # VBR header whose declared duration doesn't match the actual audio, which makes
+              # ffmpeg hang indefinitely waiting for frames that never arrive when relying on
+              # -shortest to detect end-of-stream.
+              dur = get_duration(mp3_path)
+              subprocess.run([
+                  "ffmpeg", "-y", "-v", "error",
+                  "-loop", "1", "-i", image_path,
+                  "-i", mp3_path,
+                  "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+                  "-r", "1", "-g", "1",
+                  "-c:a", "aac", "-b:a", "160k",
+                  "-t", str(dur + 1),
+                  out_path
+              ], check=True, timeout=500)
+
+          def upload_youtube(video_path, title, description, tok):
+              meta = json.dumps({
+                  "snippet": {"title": title[:100], "description": description, "categoryId": "22"},
+                  "status": {"privacyStatus": "public"}
+              }).encode()
+              size = os.path.getsize(video_path)
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+                  meta, {"Authorization": "Bearer " + tok,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": "video/mp4",
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              video_id = None
+              with open(video_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=600)
+                          video_id = json.load(resp)["id"]
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              print(e.read().decode("utf-8", "replace")[:500])
+                              raise
+                          sent = end + 1
+              return video_id
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              if manifest_file_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_file_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": MANIFEST_NAME, "parents": [root_id]}).encode()
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      headers={"Authorization": "Bearer " + DT})
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=60))
+                  globals()["manifest_file_id"] = resp["id"]
+
+          ok, failed = 0, 0
+          for i, f in enumerate(todo):
+              date, title = parse_name(f["name"])
+              full_title = ("%s - %s" % (date, title)) if date else title
+              print("[%d/%d] %s" % (i + 1, len(todo), full_title), flush=True)
+              try:
+                  download_from_drive(f["id"], "in.mp3")
+                  bg = gen_background(full_title)
+                  captioned = add_caption(bg, title)
+                  captioned.save("frame.png")
+                  make_video("in.mp3", "frame.png", "out.mp4")
+                  description = "הרב אבשלום שניידר - מכון להב מפיו יצא\nמקור: קול הלשון\n\nהועלה אוטומטית."
+                  vid = upload_youtube("out.mp4", full_title, description, YT)
+                  manifest[f["id"]] = {"video_id": vid, "title": full_title}
+                  save_manifest()
+                  print("  -> uploaded https://youtu.be/%s" % vid, flush=True)
+                  ok += 1
+                  os.remove("in.mp3")
+                  os.remove("out.mp4")
+                  os.remove("frame.png")
+              except Exception as e:
+                  print("  -> FAILED:", e, flush=True)
+                  failed += 1
+
+          print("youtube upload done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
+
+  prepare_manual_videos:
+    needs: list
+    if: always() && needs.list.result == 'success' && github.event.inputs.manual_video_limit != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: install python deps
+        run: pip install --quiet pillow python-bidi arabic-reshaper
+      - name: download background image + fonts
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          AUTH="Authorization: token $GH_TOKEN"
+          mkdir -p fonts
+          curl -sL -H "$AUTH" -o background_fallback.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-avshalom-background.png"
+          curl -sL -H "$AUTH" -o fonts/FrankRuhlLibre-Bold.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/FrankRuhlLibre-Bold.ttf"
+          curl -sL -H "$AUTH" -o fonts/FrankRuhlLibre-Medium.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/FrankRuhlLibre-Medium.ttf"
+          curl -sL -H "$AUTH" -o fonts/Rubik-Medium.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/Rubik-Medium.ttf"
+      - name: build mp4s and save to Drive for manual upload
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+          LIMIT: ${{ github.event.inputs.manual_video_limit }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, subprocess, urllib.request, urllib.error, urllib.parse, base64
+          from PIL import Image, ImageDraw, ImageFont
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          GEMINI_KEY = os.environ.get("GEMINI_KEY")
+          LIMIT = int(os.environ.get("LIMIT") or 10)
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANUAL_FOLDER_NAME = "וידאו להעלאה ידנית ליוטיוב"
+          MANIFEST_NAME = "_manual_videos_prepared.json"
+
+          # Self-contained RTL flip (no bidi/arabic_reshaper/raqm dependency) - see the
+          # matching comment in the upload_youtube job above for why.
+          _LTR = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-/:]*")
+          def rtl(s):
+              toks, i = [], 0
+              for m in _LTR.finditer(s):
+                  if m.start() > i:
+                      toks += list(s[i:m.start()])
+                  toks.append(m.group(0))
+                  i = m.end()
+              if i < len(s):
+                  toks += list(s[i:])
+              flip = {'(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{'}
+              toks = [flip.get(t, t) if len(t) == 1 else t for t in toks]
+              return "".join(reversed(toks))
+
+          def gen_background(title):
+              try:
+                  prompt = (
+                      "Create a serene, elegant abstract background image for a Jewish Torah lecture video. "
+                      "Warm deep-navy and gold color palette, soft lighting, wide 16:9 cinematic composition, "
+                      "high quality digital art. Symbolic/thematic elements only related to this lecture topic: "
+                      f'"{title}". Absolutely no readable text, no letters, no human faces or figures.'
+                  )
+                  body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+                  req = urllib.request.Request(
+                      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=" + GEMINI_KEY,
+                      data=body, headers={"Content-Type": "application/json"})
+                  resp = urllib.request.urlopen(req, timeout=60)
+                  data = json.load(resp)
+                  for p in data["candidates"][0]["content"]["parts"]:
+                      if "inlineData" in p:
+                          raw = base64.b64decode(p["inlineData"]["data"])
+                          img = Image.open(__import__("io").BytesIO(raw)).convert("RGB")
+                          return img.resize((1280, 720))
+              except Exception as e:
+                  print("  (gemini background failed, using fallback:", e, ")", flush=True)
+              return Image.open("background_fallback.png").convert("RGB").resize((1280, 720))
+
+          def add_caption(img, title):
+              img = img.convert("RGBA")
+              W, H = img.size
+              gold = (196, 164, 90)
+              draw = ImageDraw.Draw(img, "RGBA")
+              outer, inner = 26, 34
+              draw.rectangle([outer, outer, W - outer, H - outer], outline=(*gold, 230), width=2)
+              draw.rectangle([inner, inner, W - inner, H - inner], outline=(*gold, 110), width=1)
+
+              def corner(cx, cy, sx, sy):
+                  draw.line([(cx, cy), (cx + 46 * sx, cy)], fill=(*gold, 220), width=3)
+                  draw.line([(cx, cy), (cx, cy + 46 * sy)], fill=(*gold, 220), width=3)
+                  draw.ellipse([cx - 4, cy - 4, cx + 4, cy + 4], fill=(*gold, 255))
+              corner(outer, outer, 1, 1); corner(W - outer, outer, -1, 1)
+              corner(outer, H - outer, 1, -1); corner(W - outer, H - outer, -1, -1)
+
+              card_top = H - 195
+              overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+              od = ImageDraw.Draw(overlay)
+              for y in range(card_top, H - 55):
+                  a = int(185 * (y - card_top) / (H - 55 - card_top))
+                  od.line([(60, y), (W - 60, y)], fill=(6, 8, 16, a))
+              img = Image.alpha_composite(img, overlay)
+              draw = ImageDraw.Draw(img, "RGBA")
+
+              title_font = ImageFont.truetype("fonts/FrankRuhlLibre-Bold.ttf", 42, layout_engine=ImageFont.Layout.BASIC)
+              credit_font = ImageFont.truetype("fonts/Rubik-Medium.ttf", 24, layout_engine=ImageFont.Layout.BASIC)
+
+              def center(text, font, y, fill, shadow=True):
+                  t = rtl(text)
+                  bbox = draw.textbbox((0, 0), t, font=font)
+                  w = bbox[2] - bbox[0]
+                  x = (W - w) / 2
+                  if shadow:
+                      draw.text((x + 2, y + 2), t, font=font, fill=(0, 0, 0, 140))
+                  draw.text((x, y), t, font=font, fill=fill)
+
+              t = title
+              if len(t) > 46:
+                  mid = len(t) // 2
+                  sp = t.rfind(" ", 0, mid)
+                  sp = sp if sp != -1 else t.find(" ", mid)
+                  lines = [t[:sp], t[sp+1:]] if sp != -1 else [t]
+              else:
+                  lines = [t]
+
+              y = H - (170 if len(lines) > 1 else 150)
+              for line in lines:
+                  center(line, title_font, y, (245, 238, 222))
+                  y += 52
+
+              dy = H - 62
+              draw.line([(W/2 - 110, dy), (W/2 - 24, dy)], fill=(*gold, 200), width=2)
+              draw.ellipse([W/2 - 5, dy - 5, W/2 + 5, dy + 5], fill=(*gold, 255))
+              draw.line([(W/2 + 24, dy), (W/2 + 110, dy)], fill=(*gold, 200), width=2)
+              center("הרב אבשלום שניידר - מכון להב מפיו יצא", credit_font, H - 42, gold, shadow=False)
+              return img.convert("RGB")
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def drive_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet, nothing to prepare")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+
+          files = list_children(root_id)
+          by_name = {f["name"]: f for f in files}
+
+          manual_folder = by_name.get(MANUAL_FOLDER_NAME)
+          if manual_folder:
+              manual_id = manual_folder["id"]
+          else:
+              manual_id = drive_post("https://www.googleapis.com/drive/v3/files",
+                                      {"name": MANUAL_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder",
+                                       "parents": [root_id]})["id"]
+          manual_files = list_children(manual_id)
+          manual_by_name = {f["name"]: f for f in manual_files}
+
+          manifest = {}
+          manifest_file_id = None
+          if MANIFEST_NAME in by_name:
+              manifest_file_id = by_name[MANIFEST_NAME]["id"]
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          print("already prepared:", len(manifest))
+
+          mp3s = [f for f in files if f["name"].lower().endswith(".mp3")]
+          todo = [f for f in mp3s if f["id"] not in manifest]
+          print("mp3 total=%d, new to prepare=%d" % (len(mp3s), len(todo)))
+          todo = todo[:LIMIT]
+
+          def parse_name(name):
+              m = re.match(r"^(\d{4}-\d{2}-\d{2}) - (.+) \[(\d+)\]\.mp3$", name)
+              if not m:
+                  return None, name.rsplit(".", 1)[0]
+              return m.group(1), m.group(2)
+
+          def download_from_drive(file_id, out_path):
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              with urllib.request.urlopen(req, timeout=300) as r, open(out_path, "wb") as fh:
+                  while True:
+                      chunk = r.read(1 << 22)
+                      if not chunk:
+                          break
+                      fh.write(chunk)
+
+          def get_duration(path):
+              out = subprocess.run(
+                  ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                   "-of", "csv=p=0", path],
+                  capture_output=True, text=True, timeout=30, check=True
+              ).stdout.strip()
+              return float(out)
+
+          def make_video(mp3_path, image_path, out_path):
+              # Use an explicit -t (from ffprobe) instead of -shortest: some mp3 files have a
+              # VBR header whose declared duration doesn't match the actual audio, which makes
+              # ffmpeg hang indefinitely waiting for frames that never arrive when relying on
+              # -shortest to detect end-of-stream.
+              dur = get_duration(mp3_path)
+              subprocess.run([
+                  "ffmpeg", "-y", "-v", "error",
+                  "-loop", "1", "-i", image_path,
+                  "-i", mp3_path,
+                  "-c:v", "libx264", "-preset", "ultrafast", "-tune", "stillimage", "-pix_fmt", "yuv420p",
+                  "-r", "1", "-g", "1",
+                  "-c:a", "aac", "-b:a", "160k",
+                  "-t", str(dur + 1),
+                  out_path
+              ], check=True, timeout=500)
+
+          def upload_to_drive(local_path, name, parent):
+              size = os.path.getsize(local_path)
+              meta = json.dumps({"name": name, "parents": [parent]}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+                  meta, {"Authorization": "Bearer " + DT,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": "video/mp4",
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open(local_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=600)
+                          json.load(resp)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              print(e.read().decode("utf-8", "replace")[:500])
+                              raise
+                          sent = end + 1
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              if manifest_file_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_file_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": MANIFEST_NAME, "parents": [root_id]}).encode()
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=60))
+                  globals()["manifest_file_id"] = resp["id"]
+
+          ok, failed = 0, 0
+          for i, f in enumerate(todo):
+              date, title = parse_name(f["name"])
+              full_title = ("%s - %s" % (date, title)) if date else title
+              out_name = "%s.mp4" % f["name"].rsplit(".", 1)[0]
+              print("[%d/%d] %s" % (i + 1, len(todo), full_title), flush=True)
+              if out_name in manual_by_name:
+                  manifest[f["id"]] = {"title": full_title, "note": "already in Drive"}
+                  continue
+              try:
+                  download_from_drive(f["id"], "in.mp3")
+                  bg = gen_background(full_title)
+                  captioned = add_caption(bg, title)
+                  captioned.save("frame.png")
+                  make_video("in.mp3", "frame.png", "out.mp4")
+                  upload_to_drive("out.mp4", out_name, manual_id)
+                  manifest[f["id"]] = {"title": full_title}
+                  save_manifest()
+                  print("  -> saved to Drive:", out_name, flush=True)
+                  ok += 1
+                  os.remove("in.mp3")
+                  os.remove("out.mp4")
+                  os.remove("frame.png")
+              except Exception as e:
+                  print("  -> FAILED:", e, flush=True)
+                  failed += 1
+
+          print("manual video prep done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
+
+  prepare_frames:
+    needs: list
+    if: always() && needs.list.result == 'success' && (github.event_name == 'schedule' || github.event.inputs.frames_limit != '0')
+    runs-on: ubuntu-latest
+    steps:
+      - name: install python deps
+        run: pip install --quiet pillow pyluach
+      - name: download logo assets + fonts
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          AUTH="Authorization: token $GH_TOKEN"
+          mkdir -p fonts
+          curl -sL -H "$AUTH" -o logo_text.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-logo-text.png"
+          curl -sL -H "$AUTH" -o logo_flame.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-flame-icon.png"
+          curl -sL -H "$AUTH" -o fonts/Heebo-ExtraBold.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/Heebo-ExtraBold.ttf"
+      - name: generate ready-to-render transparent caption overlays, organized by topic
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          LIMIT: ${{ github.event.inputs.frames_limit || '20' }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, urllib.request, urllib.error, urllib.parse
+          from PIL import Image, ImageDraw, ImageFont
+          from pyluach import dates as hebdates
+
+          def to_hebrew_date(iso_date):
+              # iso_date: "YYYY-MM-DD" (לועזי) -> מחרוזת תאריך עברי, למשל "ט״ז טבת תשפ״ו"
+              try:
+                  y, m, d = (int(x) for x in iso_date.split("-"))
+                  return hebdates.GregorianDate(y, m, d).to_heb().hebrew_date_string()
+              except Exception:
+                  return None
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          LIMIT = int(os.environ.get("LIMIT") or 40)
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          FRAMES_FOLDER_NAME = "פריימים מוכנים לעריכה מקומית"
+          MANIFEST_NAME = "_frames_prepared.json"
+          W, H = 1600, 900
+
+          _LTR = re.compile(r"[0-9A-Za-z][0-9A-Za-z.\-/:]*")
+          def rtl(s):
+              toks, i = [], 0
+              for m in _LTR.finditer(s):
+                  if m.start() > i:
+                      toks += list(s[i:m.start()])
+                  toks.append(m.group(0))
+                  i = m.end()
+              if i < len(s):
+                  toks += list(s[i:])
+              flip = {'(': ')', ')': '(', '[': ']', ']': '[', '{': '}', '}': '{'}
+              toks = [flip.get(t, t) if len(t) == 1 else t for t in toks]
+              return "".join(reversed(toks))
+
+          def safe(s):
+              return re.sub(r'[\\/:*?"<>|]', "_", s)[:120]
+
+          def clean_title(t):
+              return re.sub(r'^REC_\d+\s*', '', t or '').strip()
+
+          _logo_text = Image.open("logo_text.png").convert("RGBA")
+          _logo_text = _logo_text.crop(_logo_text.getbbox())
+          _lt_w = 250
+          _logo_text = _logo_text.resize((_lt_w, int(_logo_text.height * _lt_w / _logo_text.width)), Image.LANCZOS)
+          _logo_flame = Image.open("logo_flame.png").convert("RGBA")
+          _lf_w = 95
+          _logo_flame = _logo_flame.resize((_lf_w, int(_logo_flame.height * _lf_w / _logo_flame.width)), Image.LANCZOS)
+
+          TITLE_SIZES = [84, 72, 62, 54, 46, 40]
+          TITLE_MAX_LINES = 3
+          TITLE_MARGIN = 110
+
+          def _wrap_words(words, font, draw, max_w):
+              lines, cur = [], []
+              for w in words:
+                  trial = cur + [w]
+                  t = rtl(" ".join(trial))
+                  width = draw.textbbox((0, 0), t, font=font)[2]
+                  if width <= max_w or not cur:
+                      cur = trial
+                  else:
+                      lines.append(" ".join(cur))
+                      cur = [w]
+              if cur:
+                  lines.append(" ".join(cur))
+              return lines
+
+          def _fit_title(title, draw):
+              # גלישה מודעת-לרוחב-פיקסלים בפועל (לא ספירת-תווים) + הקטנת גופן
+              # אוטומטית אם צריך יותר מ-3 שורות - כותרות ארוכות היו נחתכות
+              # בשני הצדדים לפני התיקון הזה (נמצא ע"י בדיקה חזותית של יוסף).
+              max_w = W - 2 * TITLE_MARGIN
+              words = title.split(" ")
+              for size in TITLE_SIZES:
+                  font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", size, layout_engine=ImageFont.Layout.BASIC)
+                  lines = _wrap_words(words, font, draw, max_w)
+                  if len(lines) <= TITLE_MAX_LINES:
+                      return font, lines, size
+              font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", TITLE_SIZES[-1], layout_engine=ImageFont.Layout.BASIC)
+              return font, _wrap_words(words, font, draw, max_w), TITLE_SIZES[-1]
+
+          def build_overlay(title, heb_date=None):
+              # שכבה שקופה בלבד - בלי רקע, בלי מסגרת (הוסרה לפי בקשה). הרקע האמיתי
+              # (וידאו-לולאה קבוע) מורכב מקומית ב-render_local.py, לא כאן.
+              img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+              gold = (196, 164, 90)
+              draw = ImageDraw.Draw(img, "RGBA")
+
+              date_font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", 30, layout_engine=ImageFont.Layout.BASIC)
+
+              def center(text, font, y, fill, shadow=True):
+                  t = rtl(text)
+                  bbox = draw.textbbox((0, 0), t, font=font)
+                  w = bbox[2] - bbox[0]
+                  x = (W - w) / 2
+                  if shadow:
+                      draw.text((x + 4, y + 4), t, font=font, fill=(0, 0, 0, 150))
+                  draw.text((x, y), t, font=font, fill=fill)
+
+              title_font, lines, title_size = _fit_title(title, draw)
+              line_h = int(title_size * 1.15)
+              total_h = line_h * len(lines)
+              bottom_pad = 70
+              y0 = H - bottom_pad - total_h
+
+              date_pill_h = 56
+              date_gap = 16
+              title_area_top = y0 - (date_pill_h + date_gap if heb_date else 20)
+              card_top = title_area_top - 20
+              card_bottom = H - 30
+
+              for y in range(card_top, card_bottom):
+                  a = int(195 * (y - card_top) / (card_bottom - card_top))
+                  draw.line([(75, y), (W - 75, y)], fill=(6, 8, 16, a))
+
+              y = y0
+              for line in lines:
+                  center(line, title_font, y, (250, 242, 225))
+                  y += line_h
+
+              if heb_date:
+                  # פס כהה ייעודי מאחורי התאריך (לא סומך על גרדיאנט הכרטיס - שם
+                  # כמעט שקוף לגמרי, התאריך לא היה קריא על רקע בהיר מאחוריו).
+                  dt = rtl(heb_date)
+                  bbox = draw.textbbox((0, 0), dt, font=date_font)
+                  tw = bbox[2] - bbox[0]
+                  dy = title_area_top
+                  pad_x, pad_y = 22, 8
+                  draw.rounded_rectangle(
+                      [(W - tw) / 2 - pad_x, dy - pad_y, (W + tw) / 2 + pad_x, dy + 40 + pad_y],
+                      radius=10, fill=(6, 8, 16, 210))
+                  center(heb_date, date_font, dy, gold, shadow=False)
+
+              logo_cx = 55 + _lt_w // 2
+              text_top = 165
+              img.alpha_composite(_logo_text, (logo_cx - _lt_w // 2, text_top))
+              img.alpha_composite(_logo_flame, (logo_cx - _lf_w // 2, text_top - _logo_flame.height + 32))
+              return img
+
+          def get_token():
+              body = urllib.parse.urlencode({
+                  "client_id": DCID, "client_secret": DCSEC,
+                  "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen(
+                  "https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token()
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def drive_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          # root folder + existing mp3s
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet, nothing to do")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+          root_children = list_children(root_id)
+          mp3s = [f for f in root_children if f["name"].lower().endswith(".mp3")]
+
+          # frames output folder (+ manifest lives here)
+          frames_folder = next((f for f in root_children if f["name"] == FRAMES_FOLDER_NAME), None)
+          frames_id = frames_folder["id"] if frames_folder else drive_post(
+              "https://www.googleapis.com/drive/v3/files",
+              {"name": FRAMES_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder", "parents": [root_id]})["id"]
+          frames_children = list_children(frames_id)
+          by_name_top = {f["name"]: f for f in frames_children}
+
+          manifest = {}
+          manifest_file_id = None
+          if MANIFEST_NAME in by_name_top:
+              manifest_file_id = by_name_top[MANIFEST_NAME]["id"]
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          print("already prepared:", len(manifest))
+
+          # rebuild FileId -> category map straight from Kol HaLashon (source of truth).
+          # Also keep the RAW (un-sanitized) title here: the mp3 filename went through
+          # safe() which turns '"' into '_' (Windows can't have '"' in a filename) - real
+          # lecture titles often use gershayim for Hebrew numeral abbreviations (e.g. נ"ב),
+          # so parsing the title back out of the filename bakes '_' into the caption image
+          # wherever a gershayim/geresh used to be. Only the filename needs sanitizing;
+          # the caption text should use the real title from the API.
+          cat_by_id = {}
+          title_by_id = {}
+          from_row, page = 0, 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              for s in batch:
+                  cat_by_id[s["FileId"]] = safe(s.get("CatDesc1") or "כללי")
+                  title_by_id[s["FileId"]] = clean_title(s.get("TitleHebrew"))
+              from_row += page
+              if len(batch) < page:
+                  break
+          print("category map size:", len(cat_by_id))
+
+          def parse_name(name):
+              m = re.match(r"^(\d{4}-\d{2}-\d{2}) - (.+) \[(\d+)\]\.mp3$", name)
+              if not m:
+                  return None, name.rsplit(".", 1)[0], None
+              return m.group(1), m.group(2), int(m.group(3))
+
+          todo = [f for f in mp3s if f["id"] not in manifest]
+          print("mp3 total=%d, new to prepare=%d" % (len(mp3s), len(todo)))
+          todo = todo[:LIMIT]
+
+          def upload_to_drive(local_path, name, parent, mime):
+              size = os.path.getsize(local_path)
+              meta = json.dumps({"name": name, "parents": [parent]}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+                  meta, {"Authorization": "Bearer " + DT,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": mime,
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open(local_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=300)
+                          json.load(resp)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              print(e.read().decode("utf-8", "replace")[:500])
+                              raise
+                          sent = end + 1
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              if manifest_file_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_file_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": MANIFEST_NAME, "parents": [frames_id]}).encode()
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=60))
+                  globals()["manifest_file_id"] = resp["id"]
+
+          category_folder_cache = {}
+          def category_folder(cat):
+              if cat in category_folder_cache:
+                  return category_folder_cache[cat]
+              existing = next((f for f in frames_children if f["name"] == cat), None)
+              fid = existing["id"] if existing else drive_post(
+                  "https://www.googleapis.com/drive/v3/files",
+                  {"name": cat, "mimeType": "application/vnd.google-apps.folder", "parents": [frames_id]})["id"]
+              category_folder_cache[cat] = fid
+              return fid
+
+          ok, failed = 0, 0
+          for i, f in enumerate(todo):
+              date, title, fid = parse_name(f["name"])
+              title = title_by_id.get(fid) or title
+              full_title = ("%s - %s" % (date, title)) if date else title
+              category = cat_by_id.get(fid, "כללי")
+              out_name = "%s.png" % f["name"].rsplit(".", 1)[0]
+              print("[%d/%d] (%s) %s" % (i + 1, len(todo), category, full_title), flush=True)
+              try:
+                  heb_date = to_hebrew_date(date) if date else None
+                  frame = build_overlay(title, heb_date)
+                  frame.save("frame_out.png")
+                  cat_folder_id = category_folder(category)
+                  upload_to_drive("frame_out.png", out_name, cat_folder_id, "image/png")
+                  manifest[f["id"]] = {"title": full_title, "category": category, "frame": out_name}
+                  save_manifest()
+                  print("  -> saved:", category + "/" + out_name, flush=True)
+                  ok += 1
+                  os.remove("frame_out.png")
+              except Exception as e:
+                  print("  -> FAILED:", e, flush=True)
+                  failed += 1
+
+          print("frame prep done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
+
+  upload_ready_videos:
+    if: github.event_name == 'schedule' || (github.event.inputs.ready_upload_limit != '0' && github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: download finished mp4s from Drive and upload to YouTube
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          LIMIT: ${{ github.event.inputs.ready_upload_limit || '6' }}
+        run: |
+          python3 - <<'PY'
+          import os, json, re, urllib.request, urllib.error, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          LIMIT = int(os.environ.get("LIMIT") or 1)
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          READY_FOLDER_NAME = "מוכן להעלאה ליוטיוב"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name,mimeType),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+          root_children = list_children(root_id)
+          ready_folder = next((f for f in root_children if f["name"] == READY_FOLDER_NAME), None)
+          if not ready_folder:
+              print("no ready-for-upload folder yet (local render_local.py hasn't produced any videos)")
+              raise SystemExit(0)
+          ready_id = ready_folder["id"]
+          ready_children = [f for f in list_children(ready_id) if f["name"].lower().endswith(".mp4")]
+
+          manifest = {}
+          manifest_file_id = None
+          existing = next((f for f in root_children if f["name"] == MANIFEST_NAME), None)
+          if existing:
+              manifest_file_id = existing["id"]
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          print("already uploaded to youtube:", len(manifest))
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              if manifest_file_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_file_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": MANIFEST_NAME, "parents": [root_id]}).encode()
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=60))
+                  globals()["manifest_file_id"] = resp["id"]
+
+          # a video that YouTube accepted the bytes for but then rejected during processing
+          # (e.g. the unverified-channel 15-minute length cap) still gets a video_id and thus
+          # a manifest entry from the try/except below - so it silently looks "done" forever.
+          # Recheck every previously-uploaded video's real status here and requeue any that
+          # failed processing (delete the broken video, drop the manifest entry) so the main
+          # loop picks it up again this run. Cheap (one videos.list call per entry).
+          def check_processing(video_id):
+              try:
+                  r = yt_get("https://www.googleapis.com/youtube/v3/videos?part=status,processingDetails&id=%s" % video_id)
+                  items = r.get("items", [])
+                  if not items:
+                      return "missing"
+                  st = items[0]["status"]
+                  proc = items[0].get("processingDetails", {})
+                  if st.get("uploadStatus") == "failed" or proc.get("processingStatus") == "failed":
+                      return "failed"
+                  return "ok"
+              except Exception as e:
+                  print("  (status check error, leaving as-is):", e)
+                  return "ok"
+
+          requeued = 0
+          for fid_key, info in list(manifest.items()):
+              vid = info.get("video_id")
+              if not vid:
+                  continue
+              status = check_processing(vid)
+              if status in ("failed", "missing"):
+                  print("  requeue (status=%s): %s (%s)" % (status, info.get("title"), vid), flush=True)
+                  try:
+                      del_req = urllib.request.Request(
+                          "https://www.googleapis.com/youtube/v3/videos?id=%s" % vid,
+                          headers={"Authorization": "Bearer " + YT}, method="DELETE")
+                      urllib.request.urlopen(del_req, timeout=30)
+                  except Exception as e:
+                      print("    delete failed (maybe already gone):", e)
+                  del manifest[fid_key]
+                  requeued += 1
+          if requeued:
+              save_manifest()
+              print("requeued %d previously-failed upload(s) for retry" % requeued, flush=True)
+
+          def parse_name(name):
+              m = re.match(r"^(\d{4}-\d{2}-\d{2}) - (.+) \[(\d+)\]\.mp4$", name)
+              if not m:
+                  return None, name.rsplit(".", 1)[0], None
+              return m.group(1), m.group(2), int(m.group(3))
+
+          # category per lesson, so each topic can get its own YouTube playlist ("album") -
+          # same source of truth (Kol HaLashon's own API) as the prepare_frames job uses.
+          cat_by_id = {}
+          from_row, page = 0, 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              for s in batch:
+                  cat_by_id[s["FileId"]] = s.get("CatDesc1") or "כללי"
+              from_row += page
+              if len(batch) < page:
+                  break
+          print("category map size:", len(cat_by_id))
+
+          _existing_playlists = None
+          def list_my_playlists():
+              out, pt = [], None
+              while True:
+                  u = "https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50"
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = yt_get(u)
+                  out += r.get("items", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          _all_playlists = list_my_playlists()
+          playlist_cache = {}
+          def get_or_create_playlist(category):
+              if category in playlist_cache:
+                  return playlist_cache[category]
+              for pl in _all_playlists:
+                  if pl["snippet"]["title"] == category:
+                      playlist_cache[category] = pl["id"]
+                      return pl["id"]
+              pl = yt_post("https://www.googleapis.com/youtube/v3/playlists?part=snippet,status", {
+                  "snippet": {"title": category, "description": "הרב אבשלום שניידר - מכון להב מפיו יצא"},
+                  "status": {"privacyStatus": "public"}
+              })
+              playlist_cache[category] = pl["id"]
+              _all_playlists.append(pl)
+              return pl["id"]
+
+          def add_to_playlist(playlist_id, video_id):
+              yt_post("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet", {
+                  "snippet": {"playlistId": playlist_id, "resourceId": {"kind": "youtube#video", "videoId": video_id}}
+              })
+
+          def download_from_drive(file_id, out_path):
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              with urllib.request.urlopen(req, timeout=600) as r, open(out_path, "wb") as fh:
+                  while True:
+                      chunk = r.read(1 << 22)
+                      if not chunk:
+                          break
+                      fh.write(chunk)
+
+          def upload_youtube(video_path, title, description, tok, publish_at):
+              # scheduled ("private" + publishAt) rather than immediately public - Yosef wants
+              # lessons to drip out one per day, never on Shabbat, instead of dumping the whole
+              # backlog on the channel at once.
+              meta = json.dumps({
+                  "snippet": {"title": title[:100], "description": description, "categoryId": "22"},
+                  "status": {"privacyStatus": "private", "publishAt": publish_at}
+              }).encode()
+              size = os.path.getsize(video_path)
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+                  meta, {"Authorization": "Bearer " + tok,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": "video/mp4",
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              video_id = None
+              with open(video_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=600)
+                          video_id = json.load(resp)["id"]
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              print(e.read().decode("utf-8", "replace")[:500])
+                              raise
+                          sent = end + 1
+              return video_id
+
+          # sequential daily publish schedule, never on Shabbat (Saturday) - state (the next
+          # free slot) is kept in Drive so it survives across runs/days.
+          import datetime
+          SCHEDULE_STATE_NAME = "_publish_schedule_state.json"
+          _sched_existing = next((f for f in root_children if f["name"] == SCHEDULE_STATE_NAME), None)
+          _sched_state_id = _sched_existing["id"] if _sched_existing else None
+          if _sched_state_id:
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % _sched_state_id,
+                  headers={"Authorization": "Bearer " + DT})
+              _sched_state = json.load(urllib.request.urlopen(req, timeout=30))
+          else:
+              _sched_state = {}
+          _today = datetime.date.today()
+          _next_date = datetime.date.fromisoformat(_sched_state["next_date"]) if _sched_state.get("next_date") else _today + datetime.timedelta(days=1)
+          if _next_date <= _today:
+              _next_date = _today + datetime.timedelta(days=1)
+
+          def save_schedule_state():
+              body = json.dumps(_sched_state).encode()
+              global _sched_state_id
+              if _sched_state_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % _sched_state_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=30)
+              else:
+                  meta = json.dumps({"name": SCHEDULE_STATE_NAME, "parents": [root_id]}).encode()
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=30))
+                  _sched_state_id = resp["id"]
+
+          def next_publish_slot():
+              global _next_date
+              while _next_date.weekday() == 5:  # Saturday = Shabbat, skip it entirely
+                  _next_date += datetime.timedelta(days=1)
+              slot = _next_date
+              _next_date = _next_date + datetime.timedelta(days=1)
+              _sched_state["next_date"] = _next_date.isoformat()
+              save_schedule_state()
+              return slot.isoformat() + "T06:00:00Z"  # ~08-09 Israel time depending on DST
+
+          todo = [f for f in ready_children if f["id"] not in manifest][:LIMIT]
+          print("videos ready in drive=%d, to upload this run=%d" % (len(ready_children), len(todo)))
+
+          def clean_title(t):
+              return re.sub(r'^REC_\d+\s*', '', t or '').strip()
+
+          ok, failed = 0, 0
+          for i, f in enumerate(todo):
+              date, title, fid = parse_name(f["name"])
+              title = clean_title(title)
+              full_title = ("%s - %s" % (date, title)) if date else title
+              category = cat_by_id.get(fid, "כללי")
+              print("[%d/%d] (%s) %s" % (i + 1, len(todo), category, full_title), flush=True)
+              try:
+                  download_from_drive(f["id"], "ready.mp4")
+                  description = "הרב אבשלום שניידר - מכון להב מפיו יצא\nמקור: קול הלשון\n\nהועלה אוטומטית."
+                  publish_at = next_publish_slot()
+                  vid = upload_youtube("ready.mp4", full_title, description, YT, publish_at)
+                  try:
+                      pl_id = get_or_create_playlist(category)
+                      add_to_playlist(pl_id, vid)
+                  except Exception as e:
+                      print("  (playlist add failed, video still uploaded):", e, flush=True)
+                  manifest[f["id"]] = {"video_id": vid, "title": full_title, "category": category, "publish_at": publish_at}
+                  save_manifest()
+                  print("  -> uploaded https://youtu.be/%s (playlist: %s, publishes: %s)" % (vid, category, publish_at), flush=True)
+                  ok += 1
+                  os.remove("ready.mp4")
+              except Exception as e:
+                  print("  -> FAILED:", e, flush=True)
+                  failed += 1
+
+          print("youtube upload done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
+
+  refine_metadata:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: pull YouTube's own free auto-captions for scheduled videos, use them to write a real title+description
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          GEMINI_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python3 - <<'PY'
+          # Yosef's idea (08/09/2026): don't transcribe locally (heavy, could crash the PC) -
+          # YouTube already generates free, solid auto-captions on every upload. A video is
+          # scheduled ~1 day ahead (see upload_ready_videos), which gives plenty of time for
+          # YouTube's auto-captions to finish before it actually publishes. So on every daily
+          # run: for each still-private/scheduled video not yet refined, try to pull its
+          # Hebrew auto-caption track via the public timedtext endpoint, and if it's there,
+          # ask Gemini (Claude has no API key wired into this repo's cloud secrets, so Gemini
+          # is the sanctioned fallback here per Yosef's own "AI ראשי=Claude, Gemini רק
+          # כ-fallback" rule) to turn the actual transcript into a real title + description,
+          # replacing the raw Kol HaLashon title. Captions aren't always ready immediately -
+          # retry for a few days, then give up gracefully and keep the original title.
+          import os, json, re, html, urllib.request, urllib.error, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          GEMINI_KEY = os.environ.get("GEMINI_KEY")
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+          MAX_ATTEMPTS = 6
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_put(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"}, method="PUT")
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          # TEMP DIAGNOSTIC (08/09/2026) - captions.list came back 403 (known API restriction:
+          # non-CMS/partner accounts can't list/download caption tracks via the official API,
+          # even as the video owner). Yosef says he saw captions on video 1 or 2 in Studio while
+          # my timedtext probe got 0 bytes. Scrape the actual watch-page player response for the
+          # real captionTracks list (what yt-dlp itself does) - most reliable ground truth.
+          for _vid in ("eePLyK6siN8", "QbgVRUnWpwk", "-x4oL3RDu88", "JEAyoBd_wSM"):
+              try:
+                  _req = urllib.request.Request(
+                      "https://www.youtube.com/watch?v=%s" % _vid,
+                      headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                               "Accept-Language": "en-US,en;q=0.9"})
+                  _html = urllib.request.urlopen(_req, timeout=30).read().decode("utf-8", "replace")
+                  _m = re.search(r'"captionTracks":(\[.*?\])', _html)
+                  print("CAPTIONS_DEBUG %s -> htmlLen=%d captionTracks=%s" % (_vid, len(_html), _m.group(1) if _m else "NONE"), flush=True)
+              except Exception as _e:
+                  print("CAPTIONS_DEBUG %s -> ERROR %s" % (_vid, _e), flush=True)
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
+          mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          if not mf.get("files"):
+              print("no manifest yet")
+              raise SystemExit(0)
+          manifest_id = mf["files"][0]["id"]
+          req = urllib.request.Request(
+              "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
+              headers={"Authorization": "Bearer " + DT})
+          manifest = json.load(urllib.request.urlopen(req, timeout=60))
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_id,
+                  data=body, method="PATCH",
+                  headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              urllib.request.urlopen(req, timeout=60)
+
+          def fetch_captions_text(video_id):
+              for lang in ("iw", "he"):
+                  try:
+                      url = "https://www.youtube.com/api/timedtext?lang=%s&v=%s&fmt=vtt" % (lang, video_id)
+                      req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                      raw = urllib.request.urlopen(req, timeout=30).read().decode("utf-8", "replace")
+                      if not raw.strip():
+                          continue
+                      lines = [l for l in raw.split("\n")
+                               if l.strip() and "-->" not in l and not l.startswith("WEBVTT") and not l.strip().isdigit()]
+                      text = html.unescape(re.sub(r"<[^>]+>", "", " ".join(lines)))
+                      text = re.sub(r"\s+", " ", text).strip()
+                      if len(text) > 200:
+                          return text
+                  except Exception:
+                      continue
+              return None
+
+          def gemini_title_and_description(transcript, fallback_title):
+              prompt = (
+                  "זהו תמלול אוטומטי (לא מושלם) של שיעור תורה בעברית של הרב אבשלום שניידר. "
+                  "על סמך התוכן בפועל, כתוב:\n"
+                  "1. כותרת קצרה וקולעת בעברית (עד 90 תווים), שמשקפת את הנושא האמיתי של השיעור.\n"
+                  "2. תיאור בן 3-4 משפטים בעברית שמסכם במדויק על מה מדובר בשיעור, בלשון ברורה וכבודה.\n"
+                  "החזר אך ורק JSON תקין בפורמט: {\"title\": \"...\", \"description\": \"...\"}\n\n"
+                  "כותרת גולמית (לגיבוי אם התמלול לא ברור): %s\n\nתמלול:\n%s"
+              ) % (fallback_title, transcript[:12000])
+              body = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode()
+              req = urllib.request.Request(
+                  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_KEY,
+                  data=body, headers={"Content-Type": "application/json"})
+              resp = json.load(urllib.request.urlopen(req, timeout=60))
+              text_out = resp["candidates"][0]["content"]["parts"][0]["text"]
+              text_out = re.sub(r"^```json\s*|\s*```$", "", text_out.strip())
+              obj = json.loads(text_out)
+              return obj["title"].strip(), obj["description"].strip()
+
+          checked, refined, failed = 0, 0, 0
+          for fid, info in manifest.items():
+              vid = info.get("video_id")
+              if not vid or info.get("refine_status") == "done":
+                  continue
+              attempts = info.get("refine_attempts", 0)
+              if attempts >= MAX_ATTEMPTS:
+                  continue
+              checked += 1
+              info["refine_attempts"] = attempts + 1
+              try:
+                  transcript = fetch_captions_text(vid)
+                  if not transcript:
+                      print("  [%s] no captions yet (attempt %d/%d)" % (vid, attempts + 1, MAX_ATTEMPTS), flush=True)
+                      continue
+                  title, description = gemini_title_and_description(transcript, info.get("title", ""))
+                  cur = yt_get("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=%s" % vid)
+                  items = cur.get("items", [])
+                  if not items:
+                      info["refine_status"] = "done"
+                      continue
+                  snippet = items[0]["snippet"]
+                  snippet["title"] = title[:100]
+                  full_description = description + "\n\nהרב אבשלום שניידר - מכון להב מפיו יצא\nמקור: קול הלשון\n\nהועלה אוטומטית."
+                  snippet["description"] = full_description
+                  yt_put("https://www.googleapis.com/youtube/v3/videos?part=snippet", {"id": vid, "snippet": snippet})
+                  info["refine_status"] = "done"
+                  info["title"] = title
+                  refined += 1
+                  print("  [%s] refined from real transcript -> %s" % (vid, title), flush=True)
+              except Exception as e:
+                  print("  [%s] FAILED:" % vid, e, flush=True)
+                  failed += 1
+              save_manifest()
+
+          print("refine_metadata done: checked=%d refined=%d failed=%d" % (checked, refined, failed), flush=True)
+          PY
+
+  reconcile_counts:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: compare lesson counts across every pipeline stage, flag anything stuck (not just "not equal yet")
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          # יוסף ביקש (08/09/2026): לוודא כל יום שמספר השיעורים בקול הלשון = מספר השיעורים
+          # ביוטיוב, ואם יש שוני - כנראה יש טעות. בפועל שוני מוחלט הוא *תמיד* קיים כרגע
+          # (279 שיעורים בבת אחת, יוטיוב מוגבל ל-~6 העלאות/יום -> ניקוז מלא ייקח ~7 שבועות
+          # בממוצע) - אז "שווה" זה יעד לטווח ארוך, לא בדיקה יומית שימושית. הבדיקה האמיתית:
+          # שהפער בכל שלב בצינור **קטן** מיום ליום (מתנקז כמצופה), לא נשאר תקוע/גדל.
+          import os, json, urllib.request, urllib.error, urllib.parse, datetime
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          FRAMES_FOLDER_NAME = "פריימים מוכנים לעריכה מקומית"
+          READY_FOLDER_NAME = "מוכן להעלאה ליוטיוב"
+          HISTORY_NAME = "_pipeline_counts_history.json"
+          HEALTH_NAME = "_pipeline_health.json"
+
+          def get_token():
+              body = urllib.parse.urlencode({
+                  "client_id": DCID, "client_secret": DCSEC,
+                  "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token()
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name,mimeType),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          def save_json(name, obj, parent):
+              body = json.dumps(obj, ensure_ascii=False).encode()
+              existing = next((f for f in root_children if f["name"] == name), None)
+              if existing:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % existing["id"],
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": name, "parents": [parent]}).encode()
+                  boundary = "xxxxKolHalashonBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode()
+                  )
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  urllib.request.urlopen(req, timeout=60)
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          if not r.get("files"):
+              print("no drive folder yet")
+              raise SystemExit(0)
+          root_id = r["files"][0]["id"]
+          root_children = list_children(root_id)
+
+          # total lessons on Kol HaLashon itself (source of truth)
+          total_kolhalashon = 0
+          from_row, page = 0, 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              total_kolhalashon += len(batch)
+              from_row += page
+              if len(batch) < page:
+                  break
+
+          total_downloaded = len([f for f in root_children if f["name"].lower().endswith(".mp3")])
+
+          frames_folder = next((f for f in root_children if f["name"] == FRAMES_FOLDER_NAME), None)
+          total_frames = 0
+          if frames_folder:
+              for cat in list_children(frames_folder["id"]):
+                  if cat["mimeType"] == "application/vnd.google-apps.folder":
+                      total_frames += len([f for f in list_children(cat["id"]) if f["name"].lower().endswith(".png")])
+
+          ready_folder = next((f for f in root_children if f["name"] == READY_FOLDER_NAME), None)
+          total_rendered = len([f for f in list_children(ready_folder["id"]) if f["name"].lower().endswith(".mp4")]) if ready_folder else 0
+
+          manifest_file = next((f for f in root_children if f["name"] == "_youtube_uploaded.json"), None)
+          total_uploaded = 0
+          if manifest_file:
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_file["id"],
+                  headers={"Authorization": "Bearer " + DT})
+              total_uploaded = len(json.load(urllib.request.urlopen(req, timeout=60)))
+
+          counts = {
+              "kolhalashon": total_kolhalashon, "downloaded": total_downloaded,
+              "frames": total_frames, "rendered": total_rendered, "uploaded_youtube": total_uploaded,
+          }
+          gaps = {
+              "kolhalashon_vs_downloaded": total_kolhalashon - total_downloaded,
+              "downloaded_vs_frames": total_downloaded - total_frames,
+              "frames_vs_rendered": total_frames - total_rendered,
+              "rendered_vs_uploaded": total_rendered - total_uploaded,
+          }
+          print("counts:", counts, flush=True)
+          print("gaps:", gaps, flush=True)
+
+          history_file = next((f for f in root_children if f["name"] == HISTORY_NAME), None)
+          history = {}
+          if history_file:
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % history_file["id"],
+                  headers={"Authorization": "Bearer " + DT})
+              history = json.load(urllib.request.urlopen(req, timeout=60))
+
+          today = datetime.date.today().isoformat()
+          STUCK_THRESHOLD = 3  # פער קטן/רעש רגיל, לא סימן לתקלה
+          problems = []
+          prev_dates = sorted(d for d in history if d != today)
+          if prev_dates:
+              prev = history[prev_dates[-1]]
+              for k, gap in gaps.items():
+                  prev_gap = prev.get("gaps", {}).get(k, 0)
+                  if gap > STUCK_THRESHOLD and gap >= prev_gap:
+                      problems.append("%s: הפער לא הצטמצם (%d -> %d)" % (k, prev_gap, gap))
+
+          status = "attention" if problems else "ok"
+          health = {
+              "date": today, "counts": counts, "gaps": gaps,
+              "status": status, "detail": "; ".join(problems) if problems else "הכל מתנקז כרגיל",
+          }
+          save_json(HEALTH_NAME, health, root_id)
+
+          history[today] = {"counts": counts, "gaps": gaps}
+          # מספיק שבועיים אחורה בשביל ההשוואה יום-מול-יום, לא צריך יותר
+          for d in sorted(history)[:-14]:
+              del history[d]
+          save_json(HISTORY_NAME, history, root_id)
+
+          print("reconcile_counts done: status=%s detail=%s" % (status, health["detail"]), flush=True)
+          PY
+
+  fetch_bg_candidates:
+    if: github.event.inputs.fetch_bg_candidates == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: search archive.org, color-grade to navy/gold, upload short previews to Drive
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, subprocess, urllib.request, urllib.parse, urllib.error
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          CANDIDATES_FOLDER_NAME = "מועמדים לרקע קבוע"
+
+          # branded navy/gold color-grade applied to every candidate preview, so what gets
+          # reviewed already looks like it would in the final videos (not raw stock colors).
+          GRADE = "eq=contrast=1.05:saturation=1.2,colorbalance=rs=0.05:bs=0.12:rm=0.1:gm=-0.02:bm=-0.1:rh=0.12:gh=0.02:bh=-0.08"
+
+          QUERIES = [
+              "seamless loop candle flame closeup",
+              "ocean waves slow motion loop nature",
+              "golden light bokeh loop abstract",
+              "fireplace flame loop 4k",
+          ]
+
+          def get_token():
+              body = urllib.parse.urlencode({
+                  "client_id": DCID, "client_secret": DCSEC,
+                  "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token()
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def drive_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              u = ("https://www.googleapis.com/drive/v3/files?q="
+                   + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                   + "&fields=files(id,name)&pageSize=1000")
+              return drive_get(u).get("files", [])
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          root_id = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")["files"][0]["id"]
+          root_children = list_children(root_id)
+          cand_folder = next((f for f in root_children if f["name"] == CANDIDATES_FOLDER_NAME), None)
+          cand_id = cand_folder["id"] if cand_folder else drive_post(
+              "https://www.googleapis.com/drive/v3/files",
+              {"name": CANDIDATES_FOLDER_NAME, "mimeType": "application/vnd.google-apps.folder", "parents": [root_id]})["id"]
+
+          def upload_to_drive(local_path, name, parent, mime):
+              size = os.path.getsize(local_path)
+              meta = json.dumps({"name": name, "parents": [parent]}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable",
+                  meta, {"Authorization": "Bearer " + DT,
+                         "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": mime,
+                         "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+              CH = 8 << 20
+              sent = 0
+              with open(local_path, "rb") as fh:
+                  while sent < size:
+                      data = fh.read(CH)
+                      end = sent + len(data) - 1
+                      put = urllib.request.Request(sess, data, method="PUT")
+                      put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                      try:
+                          resp = urllib.request.urlopen(put, timeout=300)
+                          json.load(resp)
+                          sent = size
+                      except urllib.error.HTTPError as e:
+                          if e.code != 308:
+                              raise
+                          sent = end + 1
+
+          import re
+
+          MIXKIT_PAGES = [
+              ("fire", "https://mixkit.co/free-stock-video/fire/"),
+              ("ocean", "https://mixkit.co/free-stock-video/ocean/"),
+              ("light", "https://mixkit.co/free-stock-video/light/"),
+              ("candle", "https://mixkit.co/free-stock-video/candle/"),
+              ("sunset", "https://mixkit.co/free-stock-video/sunset/"),
+              ("pixabay_fire", "https://pixabay.com/videos/search/loop%20fire/"),
+              ("pixabay_flame", "https://pixabay.com/videos/search/flame%20transparent/"),
+              ("pixabay_ocean", "https://pixabay.com/videos/search/ocean%20loop/"),
+          ]
+
+          def fetch_html(url):
+              req = urllib.request.Request(url, headers={
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36"})
+              return urllib.request.urlopen(req, timeout=60).read().decode("utf-8", "replace")
+
+          def find_mp4_urls(html):
+              urls = re.findall(r'https://[^\s"\'<>]+?\.mp4', html)
+              seen, out = set(), []
+              for u in urls:
+                  if u not in seen:
+                      seen.add(u)
+                      out.append(u)
+              return out
+
+          done = 0
+          for label, page_url in MIXKIT_PAGES:
+              try:
+                  html = fetch_html(page_url)
+                  print("page:", label, "len=%d" % len(html), flush=True)
+                  urls = find_mp4_urls(html)
+                  print("  found %d mp4 urls, sample:" % len(urls), urls[:3], flush=True)
+                  picked = False
+                  for url in urls[:8]:
+                      try:
+                          subprocess.run(["curl", "-sL", "-o", "full.mp4", "--max-time", "180",
+                                          "-A", "Mozilla/5.0", url], check=True)
+                          sz = os.path.getsize("full.mp4")
+                          if sz < 200_000:
+                              os.remove("full.mp4")
+                              continue
+                          subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", "full.mp4", "-t", "12",
+                                          "-vf", "scale=960:-2," + GRADE, "-an", "-c:v", "libx264", "-preset", "fast",
+                                          "preview.mp4"], check=True, timeout=120)
+                          safe_name = re.sub(r"[^A-Za-z0-9]+", "_", url.rsplit("/", 1)[-1])[:50]
+                          out_name = "candidate_%s_%s.mp4" % (label, safe_name)
+                          upload_to_drive("preview.mp4", out_name, cand_id, "video/mp4")
+                          print("  -> uploaded preview:", out_name, "(source size %d)" % sz, flush=True)
+                          os.remove("full.mp4")
+                          os.remove("preview.mp4")
+                          done += 1
+                          picked = True
+                      except Exception as e:
+                          print("  (skip %s: %s)" % (url, e), flush=True)
+                          for f in ("full.mp4", "preview.mp4"):
+                              if os.path.exists(f):
+                                  os.remove(f)
+                          continue
+                  if not picked:
+                      print("  no usable candidate for page:", label, flush=True)
+              except Exception as e:
+                  print("page failed:", label, e, flush=True)
+
+          print("fetch_bg_candidates done, uploaded=%d" % done, flush=True)
+          PY
+
+  fetch_full_bg:
+    if: github.event.inputs.fetch_full_bg == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: fetch ocean clip at full resolution, grade, build seamless loop, upload
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+        run: |
+          set -e
+          curl -sL -A "Mozilla/5.0" -o full.mp4 "https://assets.mixkit.co/videos/15209/15209-720.mp4"
+          ls -la full.mp4
+          ffprobe -v error -show_entries stream=width,height -of default=noprint_wrappers=1 full.mp4
+          GRADE="eq=contrast=1.05:saturation=1.2,colorbalance=rs=0.05:bs=0.12:rm=0.1:gm=-0.02:bm=-0.1:rh=0.12:gh=0.02:bh=-0.08"
+          ffmpeg -y -v error -i full.mp4 -vf "$GRADE" -an -c:v libx264 -preset fast -pix_fmt yuv420p graded.mp4
+          DUR=$(ffprobe -v error -show_entries format=duration -of csv=p=0 graded.mp4)
+          X=1.5
+          ffmpeg -y -v error -i graded.mp4 -filter_complex "
+          [0:v]trim=start=0:end=${X},setpts=PTS-STARTPTS[vstart];
+          [0:v]trim=start=$(python3 -c "print(${DUR}-${X})"):end=${DUR},setpts=PTS-STARTPTS[vend];
+          [vend][vstart]xfade=transition=fade:duration=${X}:offset=0[xf];
+          [0:v]trim=start=${X}:end=$(python3 -c "print(${DUR}-${X})"),setpts=PTS-STARTPTS[mid];
+          [xf][mid]concat=n=2:v=1:a=0[outv]
+          " -map "[outv]" -c:v libx264 -preset fast -pix_fmt yuv420p seamless.mp4
+          ls -la seamless.mp4
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse, urllib.error
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+
+          body = urllib.parse.urlencode({
+              "client_id": DCID, "client_secret": DCSEC,
+              "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+          DT = json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          root_id = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")["files"][0]["id"]
+
+          NAME = "_רקע_קבוע_ללולאה.mp4"
+          q2 = "name='%s' and trashed=false and '%s' in parents" % (NAME, root_id)
+          existing = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          old_id = existing["files"][0]["id"] if existing.get("files") else None
+
+          size = os.path.getsize("seamless.mp4")
+          if old_id:
+              meta_url = "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=resumable" % old_id
+              method_meta = "PATCH"
+          else:
+              meta_url = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable"
+              method_meta = "POST"
+          meta = json.dumps({"name": NAME} if old_id else {"name": NAME, "parents": [root_id]}).encode()
+          req = urllib.request.Request(meta_url, meta, {
+              "Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8",
+              "X-Upload-Content-Type": "video/mp4", "X-Upload-Content-Length": str(size)}, method=method_meta)
+          sess = urllib.request.urlopen(req, timeout=120).headers["Location"]
+          CH = 8 << 20
+          sent = 0
+          with open("seamless.mp4", "rb") as fh:
+              while sent < size:
+                  data = fh.read(CH)
+                  end = sent + len(data) - 1
+                  put = urllib.request.Request(sess, data, method="PUT")
+                  put.add_header("Content-Range", "bytes %d-%d/%d" % (sent, end, size))
+                  try:
+                      resp = urllib.request.urlopen(put, timeout=300)
+                      json.load(resp)
+                      sent = size
+                  except urllib.error.HTTPError as e:
+                      if e.code != 308:
+                          raise
+                      sent = end + 1
+          print("uploaded full-res seamless bg to Drive, replacing old:", bool(old_id))
+          PY
+
+  publish_existing:
+    if: github.event.inputs.publish_existing == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: flip every already-uploaded video + playlist to public
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_patch(url, obj):
+              # YouTube Data API v3's update methods (videos.update, playlists.update) are PUT,
+              # not PATCH - PATCH returns a bare 404 here with no useful error body.
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"}, method="PUT")
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          root_id = r["files"][0]["id"]
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
+          mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          if not mf.get("files"):
+              print("no manifest yet, nothing to publish")
+              raise SystemExit(0)
+          manifest_id = mf["files"][0]["id"]
+          req = urllib.request.Request(
+              "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
+              headers={"Authorization": "Bearer " + DT})
+          manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          print("videos in manifest:", len(manifest))
+
+          ok, failed = 0, 0
+          for fid, info in manifest.items():
+              vid = info.get("video_id")
+              if not vid:
+                  continue
+              try:
+                  yt_patch("https://www.googleapis.com/youtube/v3/videos?part=status", {
+                      "id": vid, "status": {"privacyStatus": "public"}
+                  })
+                  print("  public:", info.get("title"), vid, flush=True)
+                  ok += 1
+              except Exception as e:
+                  print("  FAILED:", vid, e, flush=True)
+                  failed += 1
+
+          playlists, pt = [], None
+          while True:
+              u = "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status&mine=true&maxResults=50"
+              if pt:
+                  u += "&pageToken=" + pt
+              r = yt_get(u)
+              playlists += r.get("items", [])
+              pt = r.get("nextPageToken")
+              if not pt:
+                  break
+          for pl in playlists:
+              if pl["status"]["privacyStatus"] != "public":
+                  try:
+                      yt_patch("https://www.googleapis.com/youtube/v3/playlists?part=status", {
+                          "id": pl["id"], "status": {"privacyStatus": "public"}
+                      })
+                      print("  playlist public:", pl["snippet"]["title"], flush=True)
+                  except Exception as e:
+                      print("  playlist FAILED:", pl["snippet"]["title"], e, flush=True)
+
+          print("publish_existing done: ok=%d failed=%d" % (ok, failed), flush=True)
+          PY
