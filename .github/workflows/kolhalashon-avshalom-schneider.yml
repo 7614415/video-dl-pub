@@ -953,16 +953,14 @@ jobs:
     steps:
       - name: install python deps
         run: pip install --quiet pillow pyluach
-      - name: download logo assets + fonts
+      - name: download font
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           AUTH="Authorization: token $GH_TOKEN"
           mkdir -p fonts
-          curl -sL -H "$AUTH" -o logo_text.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-logo-text.png"
-          curl -sL -H "$AUTH" -o logo_flame.png "https://raw.githubusercontent.com/7614415/video-dl/main/assets/kolhalashon-flame-icon.png"
           curl -sL -H "$AUTH" -o fonts/Heebo-ExtraBold.ttf "https://raw.githubusercontent.com/7614415/video-dl/main/assets/fonts/Heebo-ExtraBold.ttf"
-      - name: generate ready-to-render transparent caption overlays, organized by topic
+      - name: "generate ready-to-render transparent date-only overlays, organized by topic (v4 - logo+category+animation now live in a shared per-category asset)"
         env:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
           DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
@@ -1010,17 +1008,18 @@ jobs:
           def clean_title(t):
               return re.sub(r'^REC_\d+\s*', '', t or '').strip()
 
-          _logo_text = Image.open("logo_text.png").convert("RGBA")
-          _logo_text = _logo_text.crop(_logo_text.getbbox())
-          _lt_w = 250
-          _logo_text = _logo_text.resize((_lt_w, int(_logo_text.height * _lt_w / _logo_text.width)), Image.LANCZOS)
-          _logo_flame = Image.open("logo_flame.png").convert("RGBA")
-          _lf_w = 95
-          _logo_flame = _logo_flame.resize((_lf_w, int(_logo_flame.height * _lf_w / _logo_flame.width)), Image.LANCZOS)
-
-          TITLE_SIZES = [84, 72, 62, 54, 46, 40]
-          TITLE_MAX_LINES = 3
-          TITLE_MARGIN = 110
+          # עיצוב v4 (08/09/2026): הלוגו+שם-הקטגוריה+האנימציה כבר קבועים מראש בקליפ
+          # "_רקעי_כיתוב_קטגוריה/<category>.mov" (נבנה פעם אחת ל-30 הקטגוריות
+          # האמיתיות של קול הלשון - CatDesc2, לא הקיבוץ הגס הישן CatDesc1). ה-job
+          # הזה בונה עכשיו רק פריים שקוף-כמעט-לגמרי עם התאריך העברי הפרטני
+          # לשיעור, בדיוק באותו מיקום ששמור בקליפ-הקטגוריה (אותו חישוב פריסה
+          # בדיוק - CAT_SIZES/CAT_MARGIN/CAT_MAX_LINES - כדי שהתאריך יישב במקום
+          # הנכון מתחת לכיתוב הקטגוריה בלי לחשב את הקטגוריה מחדש כאן).
+          CAT_SIZES = [150, 130, 112, 96, 84, 72]
+          CAT_MAX_LINES = 3
+          CAT_MARGIN = 110
+          DATE_PILL_H = 56
+          DATE_GAP = 18
 
           def _wrap_words(words, font, draw, max_w):
               lines, cur = [], []
@@ -1037,76 +1036,41 @@ jobs:
                   lines.append(" ".join(cur))
               return lines
 
-          def _fit_title(title, draw):
-              # גלישה מודעת-לרוחב-פיקסלים בפועל (לא ספירת-תווים) + הקטנת גופן
-              # אוטומטית אם צריך יותר מ-3 שורות - כותרות ארוכות היו נחתכות
-              # בשני הצדדים לפני התיקון הזה (נמצא ע"י בדיקה חזותית של יוסף).
-              max_w = W - 2 * TITLE_MARGIN
-              words = title.split(" ")
-              for size in TITLE_SIZES:
+          def _fit_category(category, draw):
+              max_w = W - 2 * CAT_MARGIN
+              words = category.split(" ")
+              for size in CAT_SIZES:
                   font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", size, layout_engine=ImageFont.Layout.BASIC)
                   lines = _wrap_words(words, font, draw, max_w)
-                  if len(lines) <= TITLE_MAX_LINES:
+                  if len(lines) <= CAT_MAX_LINES:
                       return font, lines, size
-              font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", TITLE_SIZES[-1], layout_engine=ImageFont.Layout.BASIC)
-              return font, _wrap_words(words, font, draw, max_w), TITLE_SIZES[-1]
+              font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", CAT_SIZES[-1], layout_engine=ImageFont.Layout.BASIC)
+              return font, _wrap_words(words, font, draw, max_w), CAT_SIZES[-1]
 
-          def build_overlay(title, heb_date=None):
-              # שכבה שקופה בלבד - בלי רקע, בלי מסגרת (הוסרה לפי בקשה). הרקע האמיתי
-              # (וידאו-לולאה קבוע) מורכב מקומית ב-render_local.py, לא כאן.
+          def build_date_pill(category, heb_date):
               img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
               gold = (196, 164, 90)
               draw = ImageDraw.Draw(img, "RGBA")
+              if not heb_date:
+                  return img
+
+              _, lines, cat_size = _fit_category(category, draw)
+              line_h = int(cat_size * 1.15)
+              total_h = line_h * len(lines)
+              bottom_pad = 80
+              y0 = H - bottom_pad - total_h
+              title_area_top = y0 - (DATE_PILL_H + DATE_GAP)
 
               date_font = ImageFont.truetype("fonts/Heebo-ExtraBold.ttf", 30, layout_engine=ImageFont.Layout.BASIC)
-
-              def center(text, font, y, fill, shadow=True):
-                  t = rtl(text)
-                  bbox = draw.textbbox((0, 0), t, font=font)
-                  w = bbox[2] - bbox[0]
-                  x = (W - w) / 2
-                  if shadow:
-                      draw.text((x + 4, y + 4), t, font=font, fill=(0, 0, 0, 150))
-                  draw.text((x, y), t, font=font, fill=fill)
-
-              title_font, lines, title_size = _fit_title(title, draw)
-              line_h = int(title_size * 1.15)
-              total_h = line_h * len(lines)
-              bottom_pad = 70
-              y0 = H - bottom_pad - total_h
-
-              date_pill_h = 56
-              date_gap = 16
-              title_area_top = y0 - (date_pill_h + date_gap if heb_date else 20)
-              card_top = title_area_top - 20
-              card_bottom = H - 30
-
-              for y in range(card_top, card_bottom):
-                  a = int(195 * (y - card_top) / (card_bottom - card_top))
-                  draw.line([(75, y), (W - 75, y)], fill=(6, 8, 16, a))
-
-              y = y0
-              for line in lines:
-                  center(line, title_font, y, (250, 242, 225))
-                  y += line_h
-
-              if heb_date:
-                  # פס כהה ייעודי מאחורי התאריך (לא סומך על גרדיאנט הכרטיס - שם
-                  # כמעט שקוף לגמרי, התאריך לא היה קריא על רקע בהיר מאחוריו).
-                  dt = rtl(heb_date)
-                  bbox = draw.textbbox((0, 0), dt, font=date_font)
-                  tw = bbox[2] - bbox[0]
-                  dy = title_area_top
-                  pad_x, pad_y = 22, 8
-                  draw.rounded_rectangle(
-                      [(W - tw) / 2 - pad_x, dy - pad_y, (W + tw) / 2 + pad_x, dy + 40 + pad_y],
-                      radius=10, fill=(6, 8, 16, 210))
-                  center(heb_date, date_font, dy, gold, shadow=False)
-
-              logo_cx = 55 + _lt_w // 2
-              text_top = 165
-              img.alpha_composite(_logo_text, (logo_cx - _lt_w // 2, text_top))
-              img.alpha_composite(_logo_flame, (logo_cx - _lf_w // 2, text_top - _logo_flame.height + 32))
+              dt = rtl(heb_date)
+              bbox = draw.textbbox((0, 0), dt, font=date_font)
+              tw = bbox[2] - bbox[0]
+              pad_x, pad_y = 22, 8
+              draw.rounded_rectangle(
+                  [(W - tw) / 2 - pad_x, title_area_top - pad_y, (W + tw) / 2 + pad_x, title_area_top + 40 + pad_y],
+                  radius=10, fill=(6, 8, 16, 210))
+              x = (W - tw) / 2
+              draw.text((x, title_area_top), dt, font=date_font, fill=gold)
               return img
 
           def get_token():
@@ -1201,7 +1165,11 @@ jobs:
               if not batch:
                   break
               for s in batch:
-                  cat_by_id[s["FileId"]] = safe(s.get("CatDesc1") or "כללי")
+                  # v4 (08/09/2026): CatDesc2 עשיר בהרבה מ-CatDesc1 (30 נושאים
+                  # אמיתיים לעומת 3-4 גסים) - יוסף אישר במפורש ("איך שקול הלשון
+                  # מחלקים זה מעולה"). נפילה ל-CatDesc1 ואז "כללי" אם חסר.
+                  cat2 = (s.get("CatDesc2") or "").strip()
+                  cat_by_id[s["FileId"]] = safe(cat2 or s.get("CatDesc1") or "כללי")
                   title_by_id[s["FileId"]] = clean_title(s.get("TitleHebrew"))
               from_row += page
               if len(batch) < page:
@@ -1292,7 +1260,7 @@ jobs:
               print("[%d/%d] (%s) %s" % (i + 1, len(todo), category, full_title), flush=True)
               try:
                   heb_date = to_hebrew_date(date) if date else None
-                  frame = build_overlay(title, heb_date)
+                  frame = build_date_pill(category, heb_date)
                   frame.save("frame_out.png")
                   cat_folder_id = category_folder(category)
                   upload_to_drive("frame_out.png", out_name, cat_folder_id, "image/png")
