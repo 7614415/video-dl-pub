@@ -51,6 +51,14 @@ on:
         description: "Set to 1 to one-time-move already-uploaded videos from their coarse CatDesc1 playlist into the correct fine CatDesc2 topic playlist"
         required: false
         default: "0"
+      podcast_publish:
+        description: "Set to 1 to run the podcast job manually (it also runs automatically on the nightly schedule). Processes audio-only episodes independent of the video pipeline."
+        required: false
+        default: "0"
+      podcast_limit:
+        description: "Max new episodes to process into the podcast feed this run"
+        required: false
+        default: "30"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -2859,4 +2867,351 @@ jobs:
                   failed += 1
 
           print("fix_playlists_catdesc2 done: moved=%d already_ok=%d failed=%d" % (moved, already_ok, failed), flush=True)
+          PY
+
+  podcast_publish:
+    if: github.event_name == 'schedule' || (github.event.inputs.podcast_publish == '1' && github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: ensure ffmpeg
+        run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: build/extend the podcast (trim intro, upload mp3+feed.xml as GitHub Release assets)
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          PODCAST_LIMIT: ${{ github.event.inputs.podcast_limit || '30' }}
+        run: |
+          python3 - <<'PY'
+          # פודקאסט (בקשת יוסף 09/09/2026) - כל השיעורים גם כאודיו-בלבד, RSS feed אמיתי
+          # שאפשר להגיש ל-Apple Podcasts/Spotify. אחסון: GitHub Releases באותו ריפו הפומבי
+          # video-dl-pub שכבר בשימוש - חינמי לגמרי, בלי הגדרת אמצעי-תשלום בכלל (יוסף ביקש
+          # מפורש לוודא שזה לא עולה כסף - Cloudflare R2 נשקל ונפסל כי דורש הפעלת billing
+          # בחשבון גם לטיר החינמי). לא git-tracked (נכסי release, לא blob בהיסטוריית git) -
+          # אין סיכון לחזור על תקרית "הריפו שתפח ל-742GB".
+          # עצמאי מפייפליין הווידאו לגמרי - עובד ישירות מה-mp3 הגולמי בשורש הדרייב, אז
+          # מכסה את כל ~281 השיעורים בלי להמתין לרינדור האיטי של הווידאו.
+          import os, re, json, subprocess, urllib.request, urllib.error, urllib.parse, datetime
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          GH_TOKEN = os.environ["GH_TOKEN"]
+          LIMIT = int(os.environ.get("PODCAST_LIMIT") or 30)
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_podcast_manifest.json"
+          REPO = "7614415/video-dl-pub"
+          RELEASE_TAG = "podcast"
+          INTRO_TRIM = 4.0  # תואם את render_local.py - אותה חוויית-שמיעה בפודקאסט ובווידאו
+          DAAT_TEVUNOT_CAT = 'ספר דעת תבונות לרמח"ל'
+          FEED_TITLE = "הרב אבשלום שניידר - מכון להב מפיו יצא"
+          FEED_DESC = "שיעורי תורה מפי הרב אבשלום שניידר - ארכיון קול הלשון"
+          FEED_LINK = "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID
+
+          def extract_dt_citation(title):
+              c = re.sub(r'\s*,?\s*ספר דעת תבונות\s*$', '', (title or "").strip())
+              c = re.sub(r'\s+', ' ', c).strip()
+              return c or None
+
+          def get_drive_token():
+              body = urllib.parse.urlencode({
+                  "client_id": DCID, "client_secret": DCSEC,
+                  "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_drive_token()
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def gh_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "token " + GH_TOKEN, "Accept": "application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def gh_post(url, obj, headers=None):
+              h = {"Authorization": "token " + GH_TOKEN, "Accept": "application/vnd.github+json", "Content-Type": "application/json"}
+              if headers:
+                  h.update(headers)
+              req = urllib.request.Request(url, data=json.dumps(obj).encode(), headers=h, method="POST")
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def list_children(fid):
+              out, pt = [], None
+              while True:
+                  u = ("https://www.googleapis.com/drive/v3/files?q="
+                       + urllib.parse.quote("'%s' in parents and trashed=false" % fid)
+                       + "&fields=files(id,name,mimeType),nextPageToken&pageSize=1000")
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = drive_get(u)
+                  out += r.get("files", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          root_id = r["files"][0]["id"]
+          root_children = list_children(root_id)
+          mp3s = {f["name"]: f for f in root_children if f["name"].lower().endswith(".mp3")}
+
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
+          mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")
+          manifest_id, manifest = None, {}
+          if mf.get("files"):
+              manifest_id = mf["files"][0]["id"]
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
+                  headers={"Authorization": "Bearer " + DT})
+              manifest = json.load(urllib.request.urlopen(req, timeout=60))
+
+          def save_manifest():
+              global manifest_id
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              if manifest_id:
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_id,
+                      data=body, method="PATCH",
+                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                  urllib.request.urlopen(req, timeout=60)
+              else:
+                  meta = json.dumps({"name": MANIFEST_NAME, "parents": [root_id]}).encode()
+                  boundary = "xxxxKolHalashonPodcastBoundaryxxxx"
+                  multipart = (
+                      ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                      + meta + b"\r\n"
+                      + ("--%s\r\nContent-Type: application/json\r\n\r\n" % boundary).encode()
+                      + body + ("\r\n--%s--" % boundary).encode())
+                  req = urllib.request.Request(
+                      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + DT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  resp = json.load(urllib.request.urlopen(req, timeout=60))
+                  manifest_id = resp["id"]
+
+          # category (CatDesc2) + real Gregorian date + dt_citation, straight from Kol HaLashon
+          cat_by_id, date_by_id, dt_citation_by_id, title_by_id = {}, {}, {}, {}
+          from_row, page = 0, 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              for s in batch:
+                  fid = s["FileId"]
+                  cat2 = (s.get("CatDesc2") or "").strip()
+                  cat = cat2 or s.get("CatDesc1") or "כללי"
+                  cat_by_id[fid] = cat
+                  date_by_id[fid] = (s.get("RecordDate") or "")[:10]
+                  title_by_id[fid] = (s.get("TitleHebrew") or "").strip()
+                  if cat == DAAT_TEVUNOT_CAT:
+                      dt_citation_by_id[fid] = extract_dt_citation(s.get("TitleHebrew"))
+              from_row += page
+              if len(batch) < page:
+                  break
+          print("kol halashon lessons known:", len(cat_by_id), flush=True)
+
+          # release (create once, reuse forever)
+          try:
+              release = gh_get("https://api.github.com/repos/%s/releases/tags/%s" % (REPO, RELEASE_TAG))
+          except urllib.error.HTTPError as e:
+              if e.code != 404:
+                  raise
+              release = gh_post("https://api.github.com/repos/%s/releases" % REPO, {
+                  "tag_name": RELEASE_TAG, "name": "פודקאסט - הרב אבשלום שניידר",
+                  "body": "אודיו לכל השיעורים, לצריכה כפודקאסט (לא לצפייה ישירה).", "draft": False, "prerelease": False})
+          release_id = release["id"]
+          upload_url_base = release["upload_url"].split("{")[0]
+
+          def existing_assets():
+              return gh_get("https://api.github.com/repos/%s/releases/%d/assets?per_page=100" % (REPO, release_id))
+
+          def delete_asset(asset_id):
+              req = urllib.request.Request(
+                  "https://api.github.com/repos/%s/releases/assets/%d" % (REPO, asset_id),
+                  headers={"Authorization": "token " + GH_TOKEN}, method="DELETE")
+              urllib.request.urlopen(req, timeout=30)
+
+          def upload_asset(local_path, name, content_type):
+              assets = existing_assets()
+              old = next((a for a in assets if a["name"] == name), None)
+              if old:
+                  delete_asset(old["id"])
+              size = os.path.getsize(local_path)
+              url = upload_url_base + "?name=" + urllib.parse.quote(name)
+              with open(local_path, "rb") as fh:
+                  data = fh.read()
+              req = urllib.request.Request(url, data=data, headers={
+                  "Authorization": "token " + GH_TOKEN, "Content-Type": content_type,
+                  "Content-Length": str(size)}, method="POST")
+              return json.load(urllib.request.urlopen(req, timeout=300))
+
+          def download_from_drive(file_id, out_path):
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
+                  headers={"Authorization": "Bearer " + DT})
+              with urllib.request.urlopen(req, timeout=300) as r, open(out_path, "wb") as fh:
+                  while True:
+                      chunk = r.read(1 << 22)
+                      if not chunk:
+                          break
+                      fh.write(chunk)
+
+          def clean_title(t):
+              return re.sub(r'^REC_\d+\s*', '', t or '').strip()
+
+          def parse_name(name):
+              m = re.match(r"^(\d{4}-\d{2}-\d{2}) - (.+) \[(\d+)\]\.mp3$", name)
+              if not m:
+                  return None, name.rsplit(".", 1)[0], None
+              return m.group(1), m.group(2), int(m.group(3))
+
+          todo = [(name, f) for name, f in mp3s.items() if f["id"] not in manifest][:LIMIT]
+          print("mp3s in drive=%d, already in podcast=%d, to process this run=%d" % (len(mp3s), len(manifest), len(todo)), flush=True)
+
+          ok, failed = 0, 0
+          for name, f in todo:
+              _, name_title, fid = parse_name(name)
+              try:
+                  title = clean_title(title_by_id.get(fid) or name_title)
+                  category = cat_by_id.get(fid, "כללי")
+                  date_str = date_by_id.get(fid) or ""
+                  citation = dt_citation_by_id.get(fid)
+                  full_title = title
+                  description = "%s\nמקור: קול הלשון\nנושא: %s" % (FEED_TITLE, category)
+                  if citation:
+                      description = "📖 מיקום בספר: %s\n\n%s" % (citation, description)
+
+                  download_from_drive(f["id"], "in.mp3")
+                  subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "%.3f" % INTRO_TRIM, "-i", "in.mp3",
+                                  "-acodec", "libmp3lame", "-q:a", "4", "out.mp3"], check=True, timeout=600)
+                  dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                               "-of", "csv=p=0", "out.mp3"], capture_output=True, text=True, check=True).stdout.strip())
+                  asset_name = "%d.mp3" % fid
+                  asset = upload_asset("out.mp3", asset_name, "audio/mpeg")
+                  size = os.path.getsize("out.mp3")
+
+                  try:
+                      pub_dt = datetime.datetime.strptime(date_str, "%Y-%m-%d") if date_str else datetime.datetime.utcnow()
+                  except ValueError:
+                      pub_dt = datetime.datetime.utcnow()
+
+                  manifest[f["id"]] = {
+                      "fid": fid, "title": full_title, "description": description, "category": category,
+                      "pub_date": pub_dt.strftime("%Y-%m-%d"), "url": asset["browser_download_url"],
+                      "size": size, "duration": dur,
+                  }
+                  save_manifest()
+                  ok += 1
+                  print("  [%d/%d] (%s) %s -> uploaded" % (ok, len(todo), category, full_title), flush=True)
+                  for fp in ("in.mp3", "out.mp3"):
+                      if os.path.exists(fp):
+                          os.remove(fp)
+              except Exception as e:
+                  failed += 1
+                  print("  FAILED (%s):" % name, e, flush=True)
+                  for fp in ("in.mp3", "out.mp3"):
+                      if os.path.exists(fp):
+                          os.remove(fp)
+
+          # artwork - build once (reused forever), 1400x1400 square, from the existing clean logo assets
+          assets_now = existing_assets()
+          if not any(a["name"] == "artwork.jpg" for a in assets_now):
+              try:
+                  from PIL import Image, ImageDraw
+              except ImportError:
+                  subprocess.run(["pip", "install", "-q", "Pillow"], check=True)
+                  from PIL import Image, ImageDraw
+              q3 = "'%s' in parents and trashed=false and name='_נכסים_נקיים_זמני'" % root_id
+              tmp_folder = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q3) + "&fields=files(id,name)")
+              logo_id = None
+              if tmp_folder.get("files"):
+                  for lf in list_children(tmp_folder["files"][0]["id"]):
+                      if lf["name"] == "logo_text.png":
+                          logo_id = lf["id"]
+              canvas = Image.new("RGB", (1400, 1400), (10, 14, 28))
+              if logo_id:
+                  req = urllib.request.Request("https://www.googleapis.com/drive/v3/files/%s?alt=media" % logo_id,
+                                                headers={"Authorization": "Bearer " + DT})
+                  with open("logo.png", "wb") as fh:
+                      fh.write(urllib.request.urlopen(req, timeout=60).read())
+                  logo = Image.open("logo.png").convert("RGBA")
+                  scale = 1000 / max(logo.size)
+                  logo = logo.resize((int(logo.size[0] * scale), int(logo.size[1] * scale)))
+                  pos = ((1400 - logo.size[0]) // 2, (1400 - logo.size[1]) // 2)
+                  canvas.paste(logo, pos, logo)
+              canvas.save("artwork.jpg", quality=92)
+              upload_asset("artwork.jpg", "artwork.jpg", "image/jpeg")
+              print("artwork.jpg created", flush=True)
+
+          # feed.xml - regenerate from the FULL manifest every run (cheap, keeps it always consistent)
+          def rfc822(date_str):
+              try:
+                  d = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+              except Exception:
+                  d = datetime.datetime.utcnow()
+              return d.strftime("%a, %d %b %Y 06:00:00 +0000")
+
+          def esc(s):
+              return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+          assets_now = existing_assets()
+          artwork_url = next((a["browser_download_url"] for a in assets_now if a["name"] == "artwork.jpg"), FEED_LINK)
+
+          items = sorted(manifest.values(), key=lambda e: e.get("pub_date", ""), reverse=True)
+          items_xml = []
+          for e in items:
+              item_lines = [
+                  "<item>",
+                  "<title>%s</title>" % esc(e["title"]),
+                  "<description>%s</description>" % esc(e["description"]),
+                  "<pubDate>%s</pubDate>" % rfc822(e.get("pub_date", "")),
+                  "<guid isPermaLink=\"false\">kolhalashon-avshalom-%s</guid>" % e["fid"],
+                  "<enclosure url=\"%s\" length=\"%d\" type=\"audio/mpeg\" />" % (e["url"], e["size"]),
+                  "<itunes:duration>%d</itunes:duration>" % int(e.get("duration", 0)),
+                  "<itunes:explicit>false</itunes:explicit>",
+                  "</item>",
+              ]
+              items_xml.append("\n".join(item_lines))
+
+          feed_lines = [
+              "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+              "<rss version=\"2.0\" xmlns:itunes=\"http://www.itunes.com/dtds/podcast-1.0.dtd\" xmlns:atom=\"http://www.w3.org/2005/Atom\">",
+              "<channel>",
+              "<title>%s</title>" % esc(FEED_TITLE),
+              "<link>%s</link>" % FEED_LINK,
+              "<language>he</language>",
+              "<description>%s</description>" % esc(FEED_DESC),
+              "<itunes:author>הרב אבשלום שניידר</itunes:author>",
+              "<itunes:image href=\"%s\" />" % artwork_url,
+              "<itunes:category text=\"Religion &amp; Spirituality\" />",
+              "<itunes:explicit>false</itunes:explicit>",
+              "<image><url>%s</url><title>%s</title><link>%s</link></image>" % (artwork_url, esc(FEED_TITLE), FEED_LINK),
+              "\n".join(items_xml),
+              "</channel>",
+              "</rss>",
+          ]
+          feed = "\n".join(feed_lines)
+
+          open("feed.xml", "w", encoding="utf-8").write(feed)
+          feed_asset = upload_asset("feed.xml", "feed.xml", "application/rss+xml")
+          print("podcast_publish done: processed=%d failed=%d total_episodes=%d feed_url=%s" % (
+              ok, failed, len(manifest), feed_asset["browser_download_url"]), flush=True)
           PY
