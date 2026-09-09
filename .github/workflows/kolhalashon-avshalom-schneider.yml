@@ -67,6 +67,10 @@ on:
         description: "Set to 1 to print channel snippet/status/statistics (public/unlisted/private, subscriber/video counts, custom URL) - one-off diagnostic"
         required: false
         default: "0"
+      fix_channel_branding:
+        description: "Set to 1 (together with channel_status_check=1) to fix the channel's description/keywords (was wrong - mentioned a different rabbi) so it's actually findable by searching Rav Avshalom Schneider's name. Does NOT change the channel title (not API-editable)."
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -3355,14 +3359,15 @@ jobs:
     if: github.event.inputs.channel_status_check == '1' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - name: print channel status (public/unlisted, counts, custom url)
+      - name: print channel status (public/unlisted, counts, custom url), optionally fix branding
         env:
           YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          FIX_CHANNEL_BRANDING: ${{ github.event.inputs.fix_channel_branding || '0' }}
         run: |
           python3 - <<'PY'
-          import os, json, urllib.request, urllib.parse
+          import os, json, urllib.request, urllib.parse, urllib.error
 
           YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
           body = urllib.parse.urlencode({
@@ -3375,4 +3380,39 @@ jobs:
               headers={"Authorization": "Bearer " + YT})
           r = json.load(urllib.request.urlopen(req, timeout=60))
           print(json.dumps(r, ensure_ascii=False, indent=1), flush=True)
+
+          FIX = os.environ.get("FIX_CHANNEL_BRANDING") == "1"
+          if FIX and r.get("items"):
+              ch = r["items"][0]
+              # יוסף אישר (09/09/2026) - הכותרת עצמה לא ניתנת לשינוי דרך ה-API (הודעת שגיאה
+              # ידועה אם משנים brandingSettings.channel.title לערך שונה מהקיים - צריך להישאר
+              # זהה או להיות מושמט). מתקן רק את מה שכן אפשרי: תיאור (שהיה שגוי - על רב אחר
+              # לגמרי, ר' ישראל אליהו וינטרוב) ומילות-מפתח לחיפוש.
+              current_title = ch["brandingSettings"]["channel"].get("title", ch["snippet"]["title"])
+              new_description = (
+                  "הרב אבשלום שניידר - מכון להב מפיו יצא\n"
+                  "שיעורי תורה מפי הרב אבשלום שניידר, מתוך ארכיון קול הלשון.\n"
+                  "נושאים: ספר דעת תבונות לרמח\"ל, י\"ג עיקרי האמונה, אורחות צדיקים, "
+                  "ביטחון, עבודת התפילה, מועדי השנה ועוד."
+              )
+              new_keywords = "הרב אבשלום שניידר,מכון להב מפיו יצא,שיעורי תורה,קול הלשון,דעת תבונות,רמח\"ל,אמונה,ביטחון"
+              body2 = json.dumps({
+                  "id": ch["id"],
+                  "brandingSettings": {
+                      "channel": {
+                          "title": current_title,
+                          "description": new_description,
+                          "keywords": new_keywords,
+                      }
+                  }
+              }).encode()
+              req2 = urllib.request.Request(
+                  "https://www.googleapis.com/youtube/v3/channels?part=brandingSettings",
+                  data=body2, headers={"Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"},
+                  method="PUT")
+              try:
+                  resp = json.load(urllib.request.urlopen(req2, timeout=60))
+                  print("channel branding updated:", json.dumps(resp.get("brandingSettings", {}), ensure_ascii=False), flush=True)
+              except urllib.error.HTTPError as e:
+                  print("channel branding update FAILED:", e, e.read().decode("utf-8", "replace")[:400], flush=True)
           PY
