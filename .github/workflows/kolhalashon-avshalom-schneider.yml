@@ -3264,24 +3264,26 @@ jobs:
           print("artwork fetched:", len(artwork_bytes), "bytes", flush=True)
 
           def upload_playlist_image(playlist_id):
-              size = len(artwork_bytes)
+              # תמונה קטנה (עד 2MB) - multipart (metadata+bytes בבקשה אחת), לא resumable
+              # (resumable מיועד לקבצים גדולים כמו וידאו ומצריך זרימה דו-שלבית שונה לגמרי -
+              # זה מה שגרם ל-unexpectedPart/unknownPart בניסיונות הקודמים).
               meta = json.dumps({"snippet": {"playlistId": playlist_id, "type": "hero"}}).encode()
+              boundary = "xxxxKolHalashonPlaylistImageBoundaryxxxx"
+              multipart = (
+                  ("--%s\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n" % boundary).encode()
+                  + meta + b"\r\n"
+                  + ("--%s\r\nContent-Type: image/jpeg\r\n\r\n" % boundary).encode()
+                  + artwork_bytes + ("\r\n--%s--" % boundary).encode())
               try:
                   req = urllib.request.Request(
-                      "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=resumable&part=id",
-                      meta, {"Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8",
-                             "X-Upload-Content-Type": "image/jpeg", "X-Upload-Content-Length": str(size)})
-                  sess = urllib.request.urlopen(req, timeout=60).headers["Location"]
-                  print("    DEBUG session url:", sess, flush=True)
+                      "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=multipart&part=snippet",
+                      data=multipart,
+                      headers={"Authorization": "Bearer " + YT,
+                               "Content-Type": "multipart/related; boundary=" + boundary})
+                  return json.load(urllib.request.urlopen(req, timeout=120))
               except urllib.error.HTTPError as e:
                   body = e.read().decode("utf-8", "replace")[:400]
-                  raise RuntimeError("STEP=start_upload_session " + str(e) + " " + body)
-              try:
-                  put = urllib.request.Request(sess, artwork_bytes, headers={"Content-Type": "image/jpeg"}, method="PUT")
-                  return json.load(urllib.request.urlopen(put, timeout=120))
-              except urllib.error.HTTPError as e:
-                  body = e.read().decode("utf-8", "replace")[:400]
-                  raise RuntimeError("STEP=put_image_bytes " + str(e) + " " + body)
+                  raise RuntimeError("STEP=multipart_upload " + str(e) + " " + body)
 
           def list_my_playlists():
               out, pt = [], None
