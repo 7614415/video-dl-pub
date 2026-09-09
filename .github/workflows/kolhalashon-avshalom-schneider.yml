@@ -3263,6 +3263,16 @@ jobs:
           artwork_bytes = urllib.request.urlopen(req, timeout=60).read()
           print("artwork fetched:", len(artwork_bytes), "bytes", flush=True)
 
+          def has_playlist_image(playlist_id):
+              # ניסיונות קודמים (לפני שעברנו ל-multipart) כן יצרו בפועל רשומת-תמונה חלקית
+              # אצל גוגל אף שהחזירו שגיאה ללקוח - בלי הבדיקה הזאת, ניסיון חוזר נכשל תמיד
+              # ב-IMAGE_TYPE_ALREADY_EXISTS (500).
+              try:
+                  r = yt_get("https://www.googleapis.com/youtube/v3/playlistImages?part=snippet&playlistId=%s" % playlist_id)
+                  return any(it.get("snippet", {}).get("type") == "hero" for it in r.get("items", []))
+              except Exception:
+                  return False
+
           def upload_playlist_image(playlist_id):
               # תמונה קטנה (עד 2MB) - multipart (metadata+bytes בבקשה אחת), לא resumable
               # (resumable מיועד לקבצים גדולים כמו וידאו ומצריך זרימה דו-שלבית שונה לגמרי -
@@ -3308,7 +3318,8 @@ jobs:
                   already += 1
                   continue
               try:
-                  upload_playlist_image(pl_id)
+                  if not has_playlist_image(pl_id):
+                      upload_playlist_image(pl_id)
               except Exception as e:
                   print("  [%s] FAILED (image upload):" % title, e, flush=True)
                   failed += 1
