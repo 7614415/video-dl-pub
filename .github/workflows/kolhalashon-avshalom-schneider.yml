@@ -47,6 +47,10 @@ on:
         description: "Set to 1 to one-time-patch already-uploaded 'ספר דעת תבונות' videos' descriptions with their אות/סימן citation (Yosef asked this not be lost after transcript-based refinement)"
         required: false
         default: "0"
+      fix_playlists_catdesc2:
+        description: "Set to 1 to one-time-move already-uploaded videos from their coarse CatDesc1 playlist into the correct fine CatDesc2 topic playlist"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -2653,4 +2657,202 @@ jobs:
           save_manifest()
           print("backfill_dt_citations done: manifest_patched=%d youtube_patched=%d skipped=%d failed=%d" % (
               patched_manifest, patched_yt, skipped, failed), flush=True)
+          PY
+
+  fix_playlists_catdesc2:
+    if: github.event.inputs.fix_playlists_catdesc2 == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: move already-uploaded videos from coarse CatDesc1 playlists into fine CatDesc2 playlists
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          RAV_ID = 995449
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+
+          # one-time reconciliation (09/09/2026) - upload_ready_videos used to file every video
+          # into a playlist named after the coarse CatDesc1 bucket (one of only 4 values, one of
+          # which lumps 3 different Ramchal books together) instead of the fine 30-topic CatDesc2
+          # Yosef approved. That's fixed going forward already; this moves the videos uploaded
+          # before the fix into their correct topic playlist and removes them from the wrong one.
+          VIDEO_FID_MAP = {
+              'eePLyK6siN8': 41733949, 'QbgVRUnWpwk': 41828745, '-x4oL3RDu88': 41670240,
+              'JEAyoBd_wSM': 42704231, 'VWflX4ZYN-E': 40224757, 'XjxaJnnH3x8': 41781727,
+              'RiLa6T09WvE': 42091455, 'WEKb4n45ook': 42573739, '0EDE7TVl640': 41750053,
+              'nLtGWMnxsHY': 41977003, 'EQGfWL3pX4M': 41835401, 'dkUWai2PZr8': 42455339,
+              'MvLCh0Tf8_k': 41733901, 'BoQeAh85jpE': 42201200, 'JIx0oQwTYHE': 42685901,
+              '-XJ_bKmXyH0': 41813239, 'zDyxpSLisxw': 41673144, 'Ja-PkdLhtPs': 42081867,
+              '13X_bJ-Hv2Q': 40251442, 'gKLzGpUU-hA': 38385321, 'qGHhEFy91zg': 36029956,
+              'n7pd9OuMPfo': 37319816, 'mXkWWymhfPM': 38509082, '22uNUzzVGRg': 37368627,
+              'DYGnmJO5PSM': 36341525, 'Du0ykiPRPYs': 37368626, 'TIn0KTm4YwQ': 42683534,
+              '8EK3oJBomlU': 42671450, 'T534kS7r_7U': 42441873, 'o9StseHegyI': 34388474,
+              'ol8tswnSaRQ': 34364718, 'QjzSpxQAcl4': 34349974, 'qyMnvGn146g': 34346003,
+              'Zn5XaVR63Xk': 34383174, 'pRKDSVfWLF4': 34403432, '7VSATKMTHCU': 40067058,
+              'NWwqPqlIQdw': 42685924, 'Qsw1pJVXJcA': 42701369, 'jJKcwAxeEeE': 42692522,
+              'X9W_Pp_TR0g': 40070990,
+          }
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_post(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_delete(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT}, method="DELETE")
+              urllib.request.urlopen(req, timeout=60)
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          root_id = r["files"][0]["id"]
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
+          mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")["files"][0]
+          manifest_id = mf["id"]
+          req = urllib.request.Request(
+              "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
+              headers={"Authorization": "Bearer " + DT})
+          manifest = json.load(urllib.request.urlopen(req, timeout=60))
+          by_video_id = {info.get("video_id"): (key, info) for key, info in manifest.items() if info.get("video_id")}
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_id,
+                  data=body, method="PATCH",
+                  headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              urllib.request.urlopen(req, timeout=60)
+
+          # fresh category map straight from Kol HaLashon (same source prepare_frames uses)
+          cat_by_id = {}
+          from_row, page = 0, 100
+          while True:
+              body = json.dumps({
+                  "QueryType": -1, "LangID": -1, "MasechetID": -1, "DafNo": -1,
+                  "MasechetIDY": -1, "DafNoY": -1, "MoedID": -1, "ParashaID": -1,
+                  "EnglishDisplay": False, "MasechetIDYOz": -1, "DafNoYOz": -1,
+                  "FromRow": from_row, "NumOfRows": page,
+                  "PrefferedLanguage": -1, "SearchOrder": 4,
+                  "FiltersArray": [], "GeneralID": RAV_ID, "CustomBool": False,
+                  "activefilterType": "all"
+              }).encode()
+              req = urllib.request.Request(
+                  "https://www.kolhalashon.com/api/Search/WebSite_GetRavShiurim/",
+                  data=body, headers={
+                      "Content-Type": "application/json",
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36",
+                      "Referer": "https://www.kolhalashon.com/he/regularSite/ravs/%d" % RAV_ID,
+                      "Origin": "https://www.kolhalashon.com"})
+              batch = json.load(urllib.request.urlopen(req, timeout=60))
+              if not batch:
+                  break
+              for s in batch:
+                  cat2 = (s.get("CatDesc2") or "").strip()
+                  cat_by_id[s["FileId"]] = cat2 or s.get("CatDesc1") or "כללי"
+              from_row += page
+              if len(batch) < page:
+                  break
+
+          def list_my_playlists():
+              out, pt = [], None
+              while True:
+                  u = "https://www.googleapis.com/youtube/v3/playlists?part=snippet&mine=true&maxResults=50"
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = yt_get(u)
+                  out += r.get("items", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          _all_playlists = list_my_playlists()
+          playlist_cache = {}
+          def get_or_create_playlist(category):
+              if category in playlist_cache:
+                  return playlist_cache[category]
+              for pl in _all_playlists:
+                  if pl["snippet"]["title"] == category:
+                      playlist_cache[category] = pl["id"]
+                      return pl["id"]
+              pl = yt_post("https://www.googleapis.com/youtube/v3/playlists?part=snippet,status", {
+                  "snippet": {"title": category, "description": "הרב אבשלום שניידר - מכון להב מפיו יצא"},
+                  "status": {"privacyStatus": "public"}
+              })
+              playlist_cache[category] = pl["id"]
+              _all_playlists.append(pl)
+              return pl["id"]
+
+          def find_playlist_item(playlist_id, video_id):
+              pt = None
+              while True:
+                  u = ("https://www.googleapis.com/youtube/v3/playlistItems?part=id,contentDetails&playlistId=%s&maxResults=50" % playlist_id)
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = yt_get(u)
+                  for it in r.get("items", []):
+                      if it.get("contentDetails", {}).get("videoId") == video_id:
+                          return it["id"]
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return None
+
+          moved, already_ok, failed = 0, 0, 0
+          for vid, fid in VIDEO_FID_MAP.items():
+              entry = by_video_id.get(vid)
+              if not entry:
+                  print("  [%s] not in manifest, skipping" % vid, flush=True)
+                  failed += 1
+                  continue
+              key, info = entry
+              correct_cat = cat_by_id.get(fid, "כללי")
+              old_cat = info.get("category") or "כללי"
+              if correct_cat == old_cat:
+                  already_ok += 1
+                  continue
+              try:
+                  new_pl = get_or_create_playlist(correct_cat)
+                  if not find_playlist_item(new_pl, vid):
+                      yt_post("https://www.googleapis.com/youtube/v3/playlistItems?part=snippet", {
+                          "snippet": {"playlistId": new_pl, "resourceId": {"kind": "youtube#video", "videoId": vid}}
+                      })
+                  old_pl = get_or_create_playlist(old_cat)
+                  item_id = find_playlist_item(old_pl, vid)
+                  if item_id:
+                      yt_delete("https://www.googleapis.com/youtube/v3/playlistItems?id=%s" % item_id)
+                  info["category"] = correct_cat
+                  save_manifest()
+                  moved += 1
+                  print("  [%s] moved: '%s' -> '%s'" % (vid, old_cat, correct_cat), flush=True)
+              except Exception as e:
+                  print("  [%s] FAILED:" % vid, e, flush=True)
+                  failed += 1
+
+          print("fix_playlists_catdesc2 done: moved=%d already_ok=%d failed=%d" % (moved, already_ok, failed), flush=True)
           PY
