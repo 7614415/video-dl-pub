@@ -3263,15 +3263,25 @@ jobs:
           artwork_bytes = urllib.request.urlopen(req, timeout=60).read()
           print("artwork fetched:", len(artwork_bytes), "bytes", flush=True)
 
-          def has_playlist_image(playlist_id):
-              # ניסיונות קודמים (לפני שעברנו ל-multipart) כן יצרו בפועל רשומת-תמונה חלקית
-              # אצל גוגל אף שהחזירו שגיאה ללקוח - בלי הבדיקה הזאת, ניסיון חוזר נכשל תמיד
-              # ב-IMAGE_TYPE_ALREADY_EXISTS (500).
+          def clear_playlist_images(playlist_id):
+              # ניסיונות קודמים (לפני שעברנו ל-multipart) יצרו בפועל רשומת-תמונה חלקית/שבורה
+              # אצל גוגל אף שהחזירו שגיאה ללקוח - היא חוסמת כל insert חדש עם IMAGE_TYPE_ALREADY_EXISTS
+              # (500), גם כשהיא לא מופיעה כרגיל ב-list. תמיד לנקות לפני insert - אידמפוטנטי,
+              # מחיקת-לא-קיים היא 404 שקט, לא מזיק.
               try:
-                  r = yt_get("https://www.googleapis.com/youtube/v3/playlistImages?part=snippet&playlistId=%s" % playlist_id)
-                  return any(it.get("snippet", {}).get("type") == "hero" for it in r.get("items", []))
-              except Exception:
-                  return False
+                  r = yt_get("https://www.googleapis.com/youtube/v3/playlistImages?part=id,snippet&playlistId=%s" % playlist_id)
+                  print("    DEBUG playlistImages.list for %s:" % playlist_id, json.dumps(r, ensure_ascii=False)[:500], flush=True)
+                  for it in r.get("items", []):
+                      try:
+                          req = urllib.request.Request(
+                              "https://www.googleapis.com/youtube/v3/playlistImages?id=%s" % it["id"],
+                              headers={"Authorization": "Bearer " + YT}, method="DELETE")
+                          urllib.request.urlopen(req, timeout=30)
+                          print("    deleted existing image", it["id"], flush=True)
+                      except Exception as e:
+                          print("    (delete failed, ignoring):", e, flush=True)
+              except Exception as e:
+                  print("    DEBUG playlistImages.list exception for %s:" % playlist_id, e, flush=True)
 
           def upload_playlist_image(playlist_id):
               # תמונה קטנה (עד 2MB) - multipart (metadata+bytes בבקשה אחת), לא resumable
@@ -3318,8 +3328,8 @@ jobs:
                   already += 1
                   continue
               try:
-                  if not has_playlist_image(pl_id):
-                      upload_playlist_image(pl_id)
+                  clear_playlist_images(pl_id)
+                  upload_playlist_image(pl_id)
               except Exception as e:
                   print("  [%s] FAILED (image upload):" % title, e, flush=True)
                   failed += 1
