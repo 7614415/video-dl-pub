@@ -43,6 +43,10 @@ on:
         description: "Set to 1 to fetch logo/font assets fresh from GitHub and drop them into Drive (workaround for local-only image corruption when fetching directly)"
         required: false
         default: "0"
+      backfill_dt_citations:
+        description: "Set to 1 to one-time-patch already-uploaded 'ספר דעת תבונות' videos' descriptions with their אות/סימן citation (Yosef asked this not be lost after transcript-based refinement)"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -1442,7 +1446,25 @@ jobs:
 
           # category per lesson, so each topic can get its own YouTube playlist ("album") -
           # same source of truth (Kol HaLashon's own API) as the prepare_frames job uses.
+          # v4 (09/09/2026): CatDesc2 (fine, 30 topics) instead of CatDesc1 (coarse, 4 - one of
+          # which lumps 3 different Ramchal books into one "שעורים בספרי רמח"ל" bucket) -
+          # matches prepare_frames, and Yosef already approved CatDesc2 explicitly.
+          # Also: for "ספר דעת תבונות לרמח"ל" lessons, Kol HaLashon's own title text already
+          # names the exact אות/סימן/עמוד the lesson covers (e.g. "אות נ"ב עד נ"ה, ספר דעת
+          # תבונות") - Yosef asked for that citation to survive into the description even after
+          # the transcript-based title/description rewrite replaces the original title. Strip
+          # the redundant ", ספר דעת תבונות" suffix (the category already says that) and store
+          # the rest as dt_citation_by_id, consumed later by refine_metadata.
+          import re as _re_cat
+          DAAT_TEVUNOT_CAT = 'ספר דעת תבונות לרמח"ל'
+
+          def extract_dt_citation(title):
+              c = _re_cat.sub(r'\s*,?\s*ספר דעת תבונות\s*$', '', (title or '').strip())
+              c = _re_cat.sub(r'\s+', ' ', c).strip()
+              return c or None
+
           cat_by_id = {}
+          dt_citation_by_id = {}
           from_row, page = 0, 100
           while True:
               body = json.dumps({
@@ -1465,11 +1487,15 @@ jobs:
               if not batch:
                   break
               for s in batch:
-                  cat_by_id[s["FileId"]] = s.get("CatDesc1") or "כללי"
+                  cat2 = (s.get("CatDesc2") or "").strip()
+                  cat = cat2 or s.get("CatDesc1") or "כללי"
+                  cat_by_id[s["FileId"]] = cat
+                  if cat == DAAT_TEVUNOT_CAT:
+                      dt_citation_by_id[s["FileId"]] = extract_dt_citation(s.get("TitleHebrew"))
               from_row += page
               if len(batch) < page:
                   break
-          print("category map size:", len(cat_by_id))
+          print("category map size:", len(cat_by_id), "daat-tevunot citations:", len(dt_citation_by_id))
 
           _existing_playlists = None
           def list_my_playlists():
@@ -1582,10 +1608,13 @@ jobs:
               title = clean_title(title)
               full_title = ("%s - %s" % (date, title)) if date else title
               category = cat_by_id.get(fid, "כללי")
+              dt_citation = dt_citation_by_id.get(fid)
               print("[%d/%d] (%s) %s" % (i + 1, len(todo), category, full_title), flush=True)
               try:
                   download_from_drive(f["id"], "ready.mp4")
                   description = "הרב אבשלום שניידר - מכון להב מפיו יצא\nמקור: קול הלשון\n\nהועלה אוטומטית."
+                  if dt_citation:
+                      description = "📖 מיקום בספר: %s\n\n%s" % (dt_citation, description)
                   publish_at = next_publish_slot()
                   vid = upload_youtube("ready.mp4", full_title, description, YT, publish_at)
                   try:
@@ -1593,7 +1622,7 @@ jobs:
                       add_to_playlist(pl_id, vid)
                   except Exception as e:
                       print("  (playlist add failed, video still uploaded):", e, flush=True)
-                  manifest[f["id"]] = {"video_id": vid, "title": full_title, "category": category, "publish_at": publish_at}
+                  manifest[f["id"]] = {"video_id": vid, "title": full_title, "category": category, "publish_at": publish_at, "dt_citation": dt_citation}
                   save_manifest()
                   print("  -> uploaded https://youtu.be/%s (playlist: %s, publishes: %s)" % (vid, category, publish_at), flush=True)
                   ok += 1
@@ -1755,6 +1784,11 @@ jobs:
                   snippet = items[0]["snippet"]
                   snippet["title"] = title[:100]
                   full_description = description + "\n\nהרב אבשלום שניידר - מכון להב מפיו יצא\nמקור: קול הלשון\n\nהועלה אוטומטית."
+                  # שיעורי "ספר דעת תבונות" - שמור את מיקום האות/סימן שנקבע בשעת ההעלאה גם
+                  # אחרי שהתיאור נדרס מהתמלול (יוסף ביקש שזה לא ילך לאיבוד).
+                  dt_citation = info.get("dt_citation")
+                  if dt_citation:
+                      full_description = "📖 מיקום בספר: %s\n\n%s" % (dt_citation, full_description)
                   snippet["description"] = full_description
                   yt_put("https://www.googleapis.com/youtube/v3/videos?part=snippet", {"id": vid, "snippet": snippet})
                   info["refine_status"] = "done"
@@ -2493,4 +2527,130 @@ jobs:
           upload("logo_flame.png", "logo_flame.png", "image/png")
           upload("Heebo-ExtraBold.ttf", "Heebo-ExtraBold.ttf", "font/ttf")
           print("relay_clean_assets done")
+          PY
+
+  backfill_dt_citations:
+    if: github.event.inputs.backfill_dt_citations == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: patch dt_citation into manifest + prepend to already-uploaded videos' descriptions
+        env:
+          DCID: ${{ secrets.DRIVE_CLIENT_ID }}
+          DCSEC: ${{ secrets.DRIVE_CLIENT_SECRET }}
+          DRTOK: ${{ secrets.DRIVE_REFRESH_TOKEN }}
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.error, urllib.parse
+
+          DCID, DCSEC, DRTOK = os.environ["DCID"], os.environ["DCSEC"], os.environ["DRTOK"]
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          ROOT_FOLDER_NAME = "הרב אבשלום שניידר - קול הלשון"
+          MANIFEST_NAME = "_youtube_uploaded.json"
+
+          # one-time backfill (09/09/2026) - computed locally from Kol HaLashon's own raw
+          # TitleHebrew for the 18 "ספר דעת תבונות" lessons already uploaded to YouTube before
+          # the dt_citation feature existed in upload_ready_videos/refine_metadata. New uploads
+          # get this automatically going forward; this patches the ones already live.
+          DT_CITATION_BY_VIDEO_ID = {
+              'eePLyK6siN8': 'אות נ"ב עד נ"ה',
+              'QbgVRUnWpwk': 'אות ע"ד עד אמצע אות ע"ח עמ\' ס"ה',
+              '-x4oL3RDu88': 'אות לו המשך -לט',
+              'VWflX4ZYN-E': "דעת תבונות כ'- כח",
+              'XjxaJnnH3x8': 'דעת תבונות אות נ"ו (עמ\' מ"ז -מ"ח)',
+              'RiLa6T09WvE': 'אות קיז קי"ח עד עמ\' צ"ח ד"ה אמנם',
+              'WEKb4n45ook': 'אות קנ"ח עמ\' קס"ז -ק"ע',
+              '0EDE7TVl640': 'אות נ"ז נ"ח',
+              'nLtGWMnxsHY': 'אות פ"ב -אות פ"ח עמ\' ע"ח',
+              'EQGfWL3pX4M': 'אות ע"ח (עמ\' ס"ה) עד אות פ\' (עמ\' ס"ח)',
+              'dkUWai2PZr8': 'אות קנ"ג - אות קנ"ה',
+              'MvLCh0Tf8_k': "אות מ'ח עמ ל'ט עד אות נ'א",
+              'BoQeAh85jpE': 'אות ק"ל מעמ\' קכב עד אות קל"א',
+              'JIx0oQwTYHE': 'אות קס"ט עד עמוד קצ"ד [תחילת אלול תשפ"ו משולב עם דבורים על אלול], עמוד קצד',
+              '-XJ_bKmXyH0': 'אות נ"ט ע"ב עמ\' נ"ח',
+              'zDyxpSLisxw': "אות מ' חלק א'",
+              'Ja-PkdLhtPs': 'אות ק"י -קטו',
+              '13X_bJ-Hv2Q': "אות כ'ט -ל'ה",
+          }
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          DT = get_token(DCID, DCSEC, DRTOK)
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def drive_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_put(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"}, method="PUT")
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          q = "name='%s' and mimeType='application/vnd.google-apps.folder' and trashed=false" % ROOT_FOLDER_NAME
+          r = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q) + "&fields=files(id,name)")
+          root_id = r["files"][0]["id"]
+          q2 = "'%s' in parents and trashed=false and name='%s'" % (root_id, MANIFEST_NAME)
+          mf = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q2) + "&fields=files(id,name)")["files"][0]
+          manifest_id = mf["id"]
+          req = urllib.request.Request(
+              "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
+              headers={"Authorization": "Bearer " + DT})
+          manifest = json.load(urllib.request.urlopen(req, timeout=60))
+
+          by_video_id = {info.get("video_id"): (key, info) for key, info in manifest.items() if info.get("video_id")}
+
+          def save_manifest():
+              body = json.dumps(manifest, ensure_ascii=False).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_id,
+                  data=body, method="PATCH",
+                  headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+              urllib.request.urlopen(req, timeout=60)
+
+          patched_manifest, patched_yt, skipped, failed = 0, 0, 0, 0
+          for vid, citation in DT_CITATION_BY_VIDEO_ID.items():
+              entry = by_video_id.get(vid)
+              if not entry:
+                  print("  [%s] not found in manifest, skipping" % vid, flush=True)
+                  failed += 1
+                  continue
+              key, info = entry
+              if info.get("dt_citation") != citation:
+                  info["dt_citation"] = citation
+                  patched_manifest += 1
+              try:
+                  cur = yt_get("https://www.googleapis.com/youtube/v3/videos?part=snippet&id=%s" % vid)
+                  items = cur.get("items", [])
+                  if not items:
+                      print("  [%s] video not found on YouTube, skipping" % vid, flush=True)
+                      continue
+                  snippet = items[0]["snippet"]
+                  desc = snippet.get("description") or ""
+                  if "📖 מיקום בספר:" in desc:
+                      print("  [%s] description already has citation, skipping" % vid, flush=True)
+                      skipped += 1
+                      continue
+                  snippet["description"] = "📖 מיקום בספר: %s\n\n%s" % (citation, desc)
+                  yt_put("https://www.googleapis.com/youtube/v3/videos?part=snippet", {"id": vid, "snippet": snippet})
+                  patched_yt += 1
+                  print("  [%s] description patched with citation: %s" % (vid, citation), flush=True)
+              except Exception as e:
+                  print("  [%s] FAILED:" % vid, e, flush=True)
+                  failed += 1
+
+          save_manifest()
+          print("backfill_dt_citations done: manifest_patched=%d youtube_patched=%d skipped=%d failed=%d" % (
+              patched_manifest, patched_yt, skipped, failed), flush=True)
           PY
