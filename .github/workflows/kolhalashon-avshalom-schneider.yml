@@ -2933,10 +2933,10 @@ jobs:
                   "refresh_token": DRTOK, "grant_type": "refresh_token"}).encode()
               return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
 
-          DT = get_drive_token()
+          DT = [get_drive_token()]
 
           def drive_get(url):
-              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT})
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + DT[0]})
               return json.load(urllib.request.urlopen(req, timeout=60))
 
           def gh_get(url):
@@ -2977,7 +2977,7 @@ jobs:
               manifest_id = mf["files"][0]["id"]
               req = urllib.request.Request(
                   "https://www.googleapis.com/drive/v3/files/%s?alt=media" % manifest_id,
-                  headers={"Authorization": "Bearer " + DT})
+                  headers={"Authorization": "Bearer " + DT[0]})
               manifest = json.load(urllib.request.urlopen(req, timeout=60))
 
           def save_manifest():
@@ -2987,7 +2987,7 @@ jobs:
                   req = urllib.request.Request(
                       "https://www.googleapis.com/upload/drive/v3/files/%s?uploadType=media" % manifest_id,
                       data=body, method="PATCH",
-                      headers={"Authorization": "Bearer " + DT, "Content-Type": "application/json; charset=UTF-8"})
+                      headers={"Authorization": "Bearer " + DT[0], "Content-Type": "application/json; charset=UTF-8"})
                   urllib.request.urlopen(req, timeout=60)
               else:
                   meta = json.dumps({"name": MANIFEST_NAME, "parents": [root_id]}).encode()
@@ -3000,7 +3000,7 @@ jobs:
                   req = urllib.request.Request(
                       "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
                       data=multipart,
-                      headers={"Authorization": "Bearer " + DT,
+                      headers={"Authorization": "Bearer " + DT[0],
                                "Content-Type": "multipart/related; boundary=" + boundary})
                   resp = json.load(urllib.request.urlopen(req, timeout=60))
                   manifest_id = resp["id"]
@@ -3080,7 +3080,7 @@ jobs:
           def download_from_drive(file_id, out_path):
               req = urllib.request.Request(
                   "https://www.googleapis.com/drive/v3/files/%s?alt=media" % file_id,
-                  headers={"Authorization": "Bearer " + DT})
+                  headers={"Authorization": "Bearer " + DT[0]})
               with urllib.request.urlopen(req, timeout=300) as r, open(out_path, "wb") as fh:
                   while True:
                       chunk = r.read(1 << 22)
@@ -3100,8 +3100,17 @@ jobs:
           todo = [(name, f) for name, f in mp3s.items() if f["id"] not in manifest][:LIMIT]
           print("mp3s in drive=%d, already in podcast=%d, to process this run=%d" % (len(mp3s), len(manifest), len(todo)), flush=True)
 
+          import time as _time
+          _token_refreshed_at = [_time.time()]
+
           ok, failed = 0, 0
           for name, f in todo:
+              # ריצה גדולה (265 שיעורים) הפילה את הכל בסוף עם 401 - טוקן ה-Drive (תוקף ~שעה)
+              # פג באמצע כי מעולם לא רוענן. לרענן כל 40 דקות כדי שריצה ארוכה לא תיפול בסוף.
+              if _time.time() - _token_refreshed_at[0] > 2400:
+                  DT[0] = get_drive_token()
+                  _token_refreshed_at[0] = _time.time()
+                  print("  (refreshed drive token)", flush=True)
               _, name_title, fid = parse_name(name)
               try:
                   title = clean_title(title_by_id.get(fid) or name_title)
@@ -3159,7 +3168,7 @@ jobs:
               canvas = Image.new("RGB", (1400, 1400), (10, 14, 28))
               if logo_id:
                   req = urllib.request.Request("https://www.googleapis.com/drive/v3/files/%s?alt=media" % logo_id,
-                                                headers={"Authorization": "Bearer " + DT})
+                                                headers={"Authorization": "Bearer " + DT[0]})
                   with open("logo.png", "wb") as fh:
                       fh.write(urllib.request.urlopen(req, timeout=60).read())
                   logo = Image.open("logo.png").convert("RGBA")
