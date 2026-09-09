@@ -3268,7 +3268,7 @@ jobs:
               meta = json.dumps({"snippet": {"playlistId": playlist_id, "type": "hero"}}).encode()
               try:
                   req = urllib.request.Request(
-                      "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=resumable",
+                      "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=resumable&part=id",
                       meta, {"Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8",
                              "X-Upload-Content-Type": "image/jpeg", "X-Upload-Content-Length": str(size)})
                   sess = urllib.request.urlopen(req, timeout=60).headers["Location"]
