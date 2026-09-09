@@ -63,6 +63,10 @@ on:
         description: "Set to 1 to mark every topic playlist as a YouTube Podcast show (podcastStatus=enabled + playlist image) - also runs automatically on schedule to catch new playlists"
         required: false
         default: "0"
+      channel_status_check:
+        description: "Set to 1 to print channel snippet/status/statistics (public/unlisted/private, subscriber/video counts, custom URL) - one-off diagnostic"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -3345,4 +3349,30 @@ jobs:
                   failed += 1
 
           print("enable_youtube_podcasts done: enabled=%d already=%d failed=%d" % (enabled, already, failed), flush=True)
+          PY
+
+  channel_status_check:
+    if: github.event.inputs.channel_status_check == '1' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: print channel status (public/unlisted, counts, custom url)
+        env:
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import os, json, urllib.request, urllib.parse
+
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          body = urllib.parse.urlencode({
+              "client_id": YCID, "client_secret": YCSEC,
+              "refresh_token": YRTOK, "grant_type": "refresh_token"}).encode()
+          YT = json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          req = urllib.request.Request(
+              "https://www.googleapis.com/youtube/v3/channels?part=snippet,status,statistics,brandingSettings&mine=true",
+              headers={"Authorization": "Bearer " + YT})
+          r = json.load(urllib.request.urlopen(req, timeout=60))
+          print(json.dumps(r, ensure_ascii=False, indent=1), flush=True)
           PY
