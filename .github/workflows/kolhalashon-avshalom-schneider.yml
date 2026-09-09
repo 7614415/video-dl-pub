@@ -3055,7 +3055,16 @@ jobs:
           upload_url_base = release["upload_url"].split("{")[0]
 
           def existing_assets():
-              return gh_get("https://api.github.com/repos/%s/releases/%d/assets?per_page=100" % (REPO, release_id))
+              # ה-release הזה כבר עם 270+ נכסים (כל שיעור = mp3 נפרד) - חייב לדפדף על כל
+              # העמודים, אחרת feed.xml/artwork.jpg (שנוצרו מוקדם, לא בעמוד הראשון) לא נמצאים,
+              # ה"מחיקה לפני יצירה מחדש" לא קורית, וה-POST נכשל ב-422 (שם כבר תפוס).
+              out, page = [], 1
+              while True:
+                  batch = gh_get("https://api.github.com/repos/%s/releases/%d/assets?per_page=100&page=%d" % (REPO, release_id, page))
+                  out += batch
+                  if len(batch) < 100:
+                      return out
+                  page += 1
 
           def delete_asset(asset_id):
               req = urllib.request.Request(
