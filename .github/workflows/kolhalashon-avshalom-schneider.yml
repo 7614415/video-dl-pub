@@ -2850,6 +2850,10 @@ jobs:
                   save_manifest()
                   moved += 1
                   print("  [%s] moved: '%s' -> '%s'" % (vid, old_cat, correct_cat), flush=True)
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode("utf-8", "replace")[:400]
+                  print("  [%s] FAILED (cat '%s'->'%s'):" % (vid, old_cat, correct_cat), e, body, flush=True)
+                  failed += 1
               except Exception as e:
                   print("  [%s] FAILED:" % vid, e, flush=True)
                   failed += 1
