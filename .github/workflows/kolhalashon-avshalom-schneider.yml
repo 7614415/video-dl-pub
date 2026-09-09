@@ -2882,7 +2882,10 @@ jobs:
           PY
 
   podcast_publish:
-    if: github.event_name == 'schedule' || (github.event.inputs.podcast_publish == '1' && github.event_name == 'workflow_dispatch')
+    # יוסף החליט (09/09/2026) שהוא רוצה רק את הפודקאסט הילידי של יוטיוב (enable_youtube_podcasts),
+    # לא פיד RSS חיצוני נפרד - הוסר מה-schedule האוטומטי, נשאר manual-dispatch בלבד למקרה
+    # שירצה להפעיל שוב. ה-271 הפרקים+feed.xml שכבר פורסמו נשארים כפי שהם (לא נמחקו).
+    if: github.event.inputs.podcast_publish == '1' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: ensure ffmpeg
