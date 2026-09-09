@@ -59,6 +59,10 @@ on:
         description: "Max new episodes to process into the podcast feed this run"
         required: false
         default: "30"
+      enable_youtube_podcasts:
+        description: "Set to 1 to mark every topic playlist as a YouTube Podcast show (podcastStatus=enabled + playlist image) - also runs automatically on schedule to catch new playlists"
+        required: false
+        default: "0"
   schedule:
     - cron: "0 3 * * *"   # 06:00 Israel
 
@@ -3212,4 +3216,99 @@ jobs:
           feed_asset = upload_asset("feed.xml", "feed.xml", "application/rss+xml")
           print("podcast_publish done: processed=%d failed=%d total_episodes=%d feed_url=%s" % (
               ok, failed, len(manifest), feed_asset["browser_download_url"]), flush=True)
+          PY
+
+  enable_youtube_podcasts:
+    if: github.event_name == 'schedule' || (github.event.inputs.enable_youtube_podcasts == '1' && github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: mark every topic playlist as a YouTube Podcast show (podcastStatus=enabled + playlist image)
+        env:
+          YCID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YCSEC: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YRTOK: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          # יוסף ביקש (09/09/2026) שהתוכן יופיע גם תחת "Podcasts on YouTube" (לשונית ילידית
+          # ביוטיוב עצמו, נפרדת מהפיד החיצוני שנבנה ל-Apple/Spotify) - כל פלייליסט-נושא הופך
+          # ל"תוכנית פודקאסט". ה-API דורש שני שלבים: (1) playlistImages.insert - תמונת-ריבוע
+          # לכל פלייליסט (2MB מקס, 1:1, jpg/png) - כאן משתמשים באותה תמונת-מיתוג של הפודקאסט
+          # החיצוני (GitHub Release, כבר ציבורי) כדי לא לבנות פעמיים. (2) playlists.update
+          # עם status.podcastStatus=enabled. רץ גם על schedule כדי לתפוס פלייליסטים חדשים
+          # שנוצרים בהמשך (קטגוריה חדשה שמתגלה) - אידמפוטנטי, מדלג על מה שכבר enabled.
+          import os, json, urllib.request, urllib.error, urllib.parse
+
+          YCID, YCSEC, YRTOK = os.environ["YCID"], os.environ["YCSEC"], os.environ["YRTOK"]
+          ARTWORK_URL = "https://github.com/7614415/video-dl-pub/releases/download/podcast/artwork.jpg"
+
+          def get_token(cid, csec, rtok):
+              body = urllib.parse.urlencode({
+                  "client_id": cid, "client_secret": csec,
+                  "refresh_token": rtok, "grant_type": "refresh_token"}).encode()
+              return json.load(urllib.request.urlopen("https://oauth2.googleapis.com/token", body, timeout=60))["access_token"]
+
+          YT = get_token(YCID, YCSEC, YRTOK)
+
+          def yt_get(url):
+              req = urllib.request.Request(url, headers={"Authorization": "Bearer " + YT})
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          def yt_put(url, obj):
+              body = json.dumps(obj).encode()
+              req = urllib.request.Request(url, data=body, headers={
+                  "Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8"}, method="PUT")
+              return json.load(urllib.request.urlopen(req, timeout=60))
+
+          req = urllib.request.Request(ARTWORK_URL)
+          artwork_bytes = urllib.request.urlopen(req, timeout=60).read()
+          print("artwork fetched:", len(artwork_bytes), "bytes", flush=True)
+
+          def upload_playlist_image(playlist_id):
+              size = len(artwork_bytes)
+              meta = json.dumps({"snippet": {"playlistId": playlist_id, "type": "hero"}}).encode()
+              req = urllib.request.Request(
+                  "https://www.googleapis.com/upload/youtube/v3/playlistImages?uploadType=resumable&part=snippet",
+                  meta, {"Authorization": "Bearer " + YT, "Content-Type": "application/json; charset=UTF-8",
+                         "X-Upload-Content-Type": "image/jpeg", "X-Upload-Content-Length": str(size)})
+              sess = urllib.request.urlopen(req, timeout=60).headers["Location"]
+              put = urllib.request.Request(sess, artwork_bytes, headers={"Content-Type": "image/jpeg"}, method="PUT")
+              return json.load(urllib.request.urlopen(put, timeout=120))
+
+          def list_my_playlists():
+              out, pt = [], None
+              while True:
+                  u = "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status&mine=true&maxResults=50"
+                  if pt:
+                      u += "&pageToken=" + pt
+                  r = yt_get(u)
+                  out += r.get("items", [])
+                  pt = r.get("nextPageToken")
+                  if not pt:
+                      return out
+
+          playlists = list_my_playlists()
+          print("playlists found:", len(playlists), flush=True)
+
+          enabled, already, failed = 0, 0, 0
+          for pl in playlists:
+              pl_id = pl["id"]
+              title = pl["snippet"]["title"]
+              if pl.get("status", {}).get("podcastStatus") == "enabled":
+                  already += 1
+                  continue
+              try:
+                  upload_playlist_image(pl_id)
+                  yt_put("https://www.googleapis.com/youtube/v3/playlists?part=status", {
+                      "id": pl_id, "status": {"podcastStatus": "enabled"}})
+                  enabled += 1
+                  print("  [%s] enabled as podcast" % title, flush=True)
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode("utf-8", "replace")[:400]
+                  print("  [%s] FAILED:" % title, e, body, flush=True)
+                  failed += 1
+              except Exception as e:
+                  print("  [%s] FAILED:" % title, e, flush=True)
+                  failed += 1
+
+          print("enable_youtube_podcasts done: enabled=%d already=%d failed=%d" % (enabled, already, failed), flush=True)
           PY
