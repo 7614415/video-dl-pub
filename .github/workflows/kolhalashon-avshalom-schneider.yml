@@ -2875,6 +2875,8 @@ jobs:
     steps:
       - name: ensure ffmpeg
         run: which ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg)
+      - name: ensure Pillow (artwork generation)
+        run: pip install --quiet pillow
       - name: build/extend the podcast (trim intro, upload mp3+feed.xml as GitHub Release assets)
         env:
           DCID: ${{ secrets.DRIVE_CLIENT_ID }}
@@ -3134,11 +3136,7 @@ jobs:
           # artwork - build once (reused forever), 1400x1400 square, from the existing clean logo assets
           assets_now = existing_assets()
           if not any(a["name"] == "artwork.jpg" for a in assets_now):
-              try:
-                  from PIL import Image, ImageDraw
-              except ImportError:
-                  subprocess.run(["pip", "install", "-q", "Pillow"], check=True)
-                  from PIL import Image, ImageDraw
+              from PIL import Image, ImageDraw
               q3 = "'%s' in parents and trashed=false and name='_נכסים_נקיים_זמני'" % root_id
               tmp_folder = drive_get("https://www.googleapis.com/drive/v3/files?q=" + urllib.parse.quote(q3) + "&fields=files(id,name)")
               logo_id = None
