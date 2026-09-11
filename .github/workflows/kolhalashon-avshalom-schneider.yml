@@ -8,9 +8,9 @@ on:
         required: false
         default: "350"
       youtube_limit:
-        description: "Max videos to upload to YouTube this run (YouTube quota allows ~6/day)"
+        description: "DEPRECATED/legacy path - builds a simple video (Gemini-generated still image + audio), NOT the branded render_local.py design. Off by default (0). Yosef asked (11/09/2026) to never use this silently again - use ready_upload_limit instead for real uploads."
         required: false
-        default: "5"
+        default: "0"
       manual_video_limit:
         description: "Max mp4 files to prepare in Drive for manual upload (does not touch YouTube API)"
         required: false
@@ -318,7 +318,7 @@ jobs:
 
   upload_youtube:
     needs: download
-    if: always() && needs.list.result == 'success'
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.youtube_limit != '0' && github.event.inputs.youtube_limit != ''
     runs-on: ubuntu-latest
     steps:
       - name: ensure ffmpeg
