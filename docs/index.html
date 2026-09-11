@@ -168,6 +168,63 @@
 
   #empty{display:none;text-align:center;color:var(--text-dim);padding:60px 20px;}
   #loading{text-align:center;color:var(--text-dim);padding:60px 20px;}
+
+  .card{cursor:pointer;}
+
+  #playerOverlay{
+    display:none;
+    position:fixed;inset:0;
+    background:rgba(5,7,16,.88);
+    z-index:100;
+    align-items:center;justify-content:center;
+    padding:24px;
+  }
+  #playerOverlay.open{display:flex;}
+  #playerBox{
+    width:100%;
+    max-width:960px;
+    background:var(--card);
+    border:1px solid var(--border);
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow:0 20px 60px rgba(0,0,0,.5);
+  }
+  #playerBox .playerHead{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:12px 16px;
+    border-bottom:1px solid var(--border);
+  }
+  #playerBox .playerHead h3{
+    margin:0;
+    font-size:14px;
+    font-weight:500;
+    color:var(--text);
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  #playerClose{
+    flex:0 0 auto;
+    width:30px;height:30px;
+    border-radius:50%;
+    border:1px solid var(--border);
+    background:transparent;
+    color:var(--text-dim);
+    font-size:16px;
+    line-height:1;
+    cursor:pointer;
+  }
+  #playerClose:hover{color:var(--gold);border-color:var(--gold-soft);}
+  #playerFrame{
+    width:100%;
+    aspect-ratio:16/9;
+    display:block;
+    border:0;
+    background:#000;
+  }
 </style>
 </head>
 <body>
@@ -192,6 +249,16 @@
   <span class="sep">·</span>
   <a href="https://github.com/7614415/video-dl-pub/releases/download/podcast/feed.xml">פודקאסט (RSS)</a>
 </footer>
+
+<div id="playerOverlay">
+  <div id="playerBox">
+    <div class="playerHead">
+      <h3 id="playerTitle"></h3>
+      <button id="playerClose" aria-label="סגור" type="button">✕</button>
+    </div>
+    <iframe id="playerFrame" src="" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+  </div>
+</div>
 
 <script>
 const PLAY_ICON = '<svg viewBox="0 0 68 48" xmlns="http://www.w3.org/2000/svg"><path d="M66.5 7.7c-.8-2.9-2.5-5.2-5.4-6C55.8.2 34 .2 34 .2s-21.8 0-27.1 1.5c-2.9.8-4.6 3-5.4 6C.2 13 .2 24 .2 24s0 11 1.3 16.3c.8 2.9 2.5 5.1 5.4 6C12.2 47.8 34 47.8 34 47.8s21.8 0 27.1-1.5c2.9-.8 4.6-3 5.4-6C67.8 35 67.8 24 67.8 24s0-11-1.3-16.3z" fill="#c4a45a" opacity=".95"/><path d="M45 24 27 14v20z" fill="#0b0f1e"/></svg>';
@@ -246,24 +313,46 @@ function render(data){
     grid.className = 'grid';
 
     cat.videos.slice().reverse().forEach(v => {
-      const a = document.createElement('a');
-      a.href = 'https://youtu.be/' + v.id;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.className = 'card';
-      a.innerHTML =
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.setAttribute('role', 'button');
+      card.setAttribute('tabindex', '0');
+      card.innerHTML =
         '<div class="thumb">' +
           '<img loading="lazy" src="' + esc(v.thumbnail) + '" alt="">' +
           '<div class="play">' + PLAY_ICON + '</div>' +
         '</div>' +
         '<div class="info"><h3>' + esc(v.title) + '</h3></div>';
-      grid.appendChild(a);
+      const openThis = () => openPlayer(v.id, v.title);
+      card.addEventListener('click', openThis);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openThis(); } });
+      grid.appendChild(card);
     });
 
     section.appendChild(grid);
     contentEl.appendChild(section);
   });
 }
+
+const overlay = document.getElementById('playerOverlay');
+const frame = document.getElementById('playerFrame');
+const titleEl = document.getElementById('playerTitle');
+
+function openPlayer(id, title){
+  titleEl.textContent = title || '';
+  frame.src = 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0';
+  overlay.classList.add('open');
+}
+
+function closePlayer(){
+  overlay.classList.remove('open');
+  frame.src = '';
+  titleEl.textContent = '';
+}
+
+document.getElementById('playerClose').addEventListener('click', closePlayer);
+overlay.addEventListener('click', e => { if (e.target === overlay) closePlayer(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && overlay.classList.contains('open')) closePlayer(); });
 </script>
 
 </body>
