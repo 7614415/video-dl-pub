@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-09-11T07:48:54Z",
+ "generated_at": "2026-09-12T07:42:00Z",
  "channel": {
   "id": "UCyw-wgIrz5zswtMKn7Hyw6A",
   "title": "מכון להב מפיו יצא",
   "customUrl": "@harevavshlumshaniyader",
   "thumbnail": "https://yt3.ggpht.com/SEYIKBQ1ApWXJ3gs2jc2kIOK7vLy4TzzESDi6jwp8-vpD1fZAefgO1QT4yCK3uogFTLwESaGhA=s800-c-k-c0x00ffffff-no-rj",
-  "videoCount": "67"
+  "videoCount": "63"
  },
  "categories": [
   {
@@ -432,6 +432,12 @@
      "publishedAt": "2026-09-09T10:10:44Z"
     }
    ]
+  },
+  {
+   "name": "י\"ג עיקרי האמונה",
+   "playlistId": "PLPGzBmj2c7mQ",
+   "count": 0,
+   "videos": []
   }
  ]
 }
