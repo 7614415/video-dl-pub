@@ -104,9 +104,21 @@ def archive(query, count, mediatype, out):
 
 
 # ------------------------------------------------------------------- mixkit
+MIXKIT_PATH = {"audio": "sound-effects", "music": "stock-music", "video": "stock-video"}
+
+
+def title_from_url(u):
+    """Mixkit CDN names are often mixkit-<slug>-<id>-<res>.<ext>; pull the
+    slug out as a human title when present. Older/bare numeric ids have none."""
+    base = os.path.splitext(os.path.basename(u))[0]
+    base = re.sub(r"-(large|medium|small)$", "", base)
+    m = re.match(r"^mixkit-(.+)-(\d+)$", base)
+    return m.group(1).replace("-", " ") if m else None
+
+
 def mixkit(query, count, kind, out):
     base = "https://mixkit.co/free-%s/%s/" % (
-        "sound-effects" if kind == "audio" else "stock-video", urllib.parse.quote(query))
+        MIXKIT_PATH.get(kind, "stock-video"), urllib.parse.quote(query))
     try:
         html = get(base).decode("utf-8", "ignore")
     except Exception as e:
@@ -122,7 +134,8 @@ def mixkit(query, count, kind, out):
     for i, u in enumerate(urls[:count], 1):
         dst = os.path.join(out, "%02d_%s" % (i, safe(os.path.basename(u))))
         if curl(u, dst, referer="https://mixkit.co/"):
-            manifest.append(dict(file=os.path.basename(dst), source=u))
+            manifest.append(dict(file=os.path.basename(dst), source=u,
+                                 title=title_from_url(u), query=query))
     return manifest
 
 
@@ -144,7 +157,7 @@ def main():
     ap.add_argument("--query", default="")
     ap.add_argument("--count", type=int, default=20)
     ap.add_argument("--mediatype", default="movies", help="archive: movies|audio")
-    ap.add_argument("--kind", default="audio", help="mixkit: audio|video")
+    ap.add_argument("--kind", default="audio", help="mixkit: audio|video|music")
     ap.add_argument("--urls", default="")
     ap.add_argument("--out", default="out")
     a = ap.parse_args()
@@ -167,3 +180,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
