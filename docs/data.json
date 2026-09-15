@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-09-14T08:34:58Z",
+ "generated_at": "2026-09-15T08:24:32Z",
  "channel": {
   "id": "UCyw-wgIrz5zswtMKn7Hyw6A",
   "title": "מכון להב מפיו יצא",
   "customUrl": "@harevavshlumshaniyader",
   "thumbnail": "https://yt3.ggpht.com/SEYIKBQ1ApWXJ3gs2jc2kIOK7vLy4TzzESDi6jwp8-vpD1fZAefgO1QT4yCK3uogFTLwESaGhA=s800-c-k-c0x00ffffff-no-rj",
-  "videoCount": "84"
+  "videoCount": "87"
  },
  "categories": [
   {
@@ -477,6 +477,19 @@
      "title": "שבע דנחמתא — גלות הדעת ונקודת הקשר הפנימית | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/8EK3oJBomlU/mqdefault.jpg",
      "publishedAt": "2026-09-09T10:10:41Z"
+    }
+   ]
+  },
+  {
+   "name": "תשובה בלי מיתוסים למעיישה ממש",
+   "playlistId": "PLOIrYAHsUtHY",
+   "count": 1,
+   "videos": [
+    {
+     "id": "pxLLvjaOeIc",
+     "title": "2026-08-28 - תשובה בלי מיתוסים ג' להכיר את הכחות שלנו והדרכה מפורטת לחשבון נפש בריא ויעיל, אלול",
+     "thumbnail": "https://i.ytimg.com/vi/pxLLvjaOeIc/mqdefault.jpg",
+     "publishedAt": "2026-09-14T08:35:42Z"
     }
    ]
   },
