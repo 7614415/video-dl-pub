@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-09-15T08:24:32Z",
+ "generated_at": "2026-09-16T08:18:05Z",
  "channel": {
   "id": "UCyw-wgIrz5zswtMKn7Hyw6A",
   "title": "מכון להב מפיו יצא",
   "customUrl": "@harevavshlumshaniyader",
   "thumbnail": "https://yt3.ggpht.com/SEYIKBQ1ApWXJ3gs2jc2kIOK7vLy4TzzESDi6jwp8-vpD1fZAefgO1QT4yCK3uogFTLwESaGhA=s800-c-k-c0x00ffffff-no-rj",
-  "videoCount": "87"
+  "videoCount": "111"
  },
  "categories": [
   {
@@ -138,7 +138,7 @@
   {
    "name": "בין המיצרים - כללי",
    "playlistId": "PLL8EbH64_OX8",
-   "count": 11,
+   "count": 13,
    "videos": [
     {
      "id": "h0kFQ8rHCeA",
@@ -205,6 +205,18 @@
      "title": "בין המצרים: למה איננו בוכים? גלות הדעת והדרך להתחבר לחורבן",
      "thumbnail": "https://i.ytimg.com/vi/2z5L-L0db1s/mqdefault.jpg",
      "publishedAt": "2026-09-10T07:22:14Z"
+    },
+    {
+     "id": "I-YimeP0PYE",
+     "title": "2025-08-04 - קינה ונהי ג' כלים לאבלות זכות הנשמה אהבה וידיעה (פלא יועץ), תשעה באב",
+     "thumbnail": "https://i.ytimg.com/vi/I-YimeP0PYE/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:31:07Z"
+    },
+    {
+     "id": "_g66XYdMwIg",
+     "title": "2026-07-23 - ערב ט' באב תשפ_ו כיצד להתכונן למועד הנפלא של ט' באב, תשעה באב",
+     "thumbnail": "https://i.ytimg.com/vi/_g66XYdMwIg/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:32:49Z"
     }
    ]
   },
@@ -276,25 +288,25 @@
     },
     {
      "id": "Rz0GAFWpWe4",
-     "title": "2024-07-01 - אורחות צדיקים שער העצלות",
+     "title": "שער העצלות: למה אין מצב ניטרלי – מנוחת העולם הבא ותענוג גילוי הייחוד",
      "thumbnail": "https://i.ytimg.com/vi/Rz0GAFWpWe4/mqdefault.jpg",
      "publishedAt": "2026-09-13T18:50:28Z"
     },
     {
      "id": "LAn7f19zPUM",
-     "title": "2024-06-18 - אורחות צדיקים שער הרצון",
+     "title": "שער הרצון: איך להיות מרוצה ממה שיש לך ועדיין לשאוף ליותר | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/LAn7f19zPUM/mqdefault.jpg",
      "publishedAt": "2026-09-13T18:51:01Z"
     },
     {
      "id": "ZjRf0O541DU",
-     "title": "2024-08-13 - אורחות צדיקים שער השתיקה ב' מי כמוך באילמים",
+     "title": "מי כמוך באילמים – סוד השתיקה של הקב\"ה ומידת ההשתוות | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/ZjRf0O541DU/mqdefault.jpg",
      "publishedAt": "2026-09-13T18:51:35Z"
     },
     {
      "id": "3ebb91vv8fk",
-     "title": "2024-06-18 - אורחות צדיקים קנאה",
+     "title": "שער הקנאה באורחות צדיקים: קנאה כמנוע – מתי היא הורסת ומתי בונה | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/3ebb91vv8fk/mqdefault.jpg",
      "publishedAt": "2026-09-14T08:15:38Z"
     }
@@ -387,6 +399,43 @@
    ]
   },
   {
+   "name": "יום הכפורים",
+   "playlistId": "PLTGP14KN23Qg",
+   "count": 5,
+   "videos": [
+    {
+     "id": "xzbZZJlxhqk",
+     "title": "ראש השנה ותשובה — המלכת הבורא והדרך הישרה",
+     "thumbnail": "https://i.ytimg.com/vi/xzbZZJlxhqk/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:12:10Z"
+    },
+    {
+     "id": "0haBqb5MOAc",
+     "title": "תשובה שמחזיקה מעמד — כוחה של קבלה פשוטה בבית היהודי",
+     "thumbnail": "https://i.ytimg.com/vi/0haBqb5MOAc/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:13:09Z"
+    },
+    {
+     "id": "BxcN1-laSpc",
+     "title": "יום כיפור לאור הרמח\"ל: הזאות אחת ואחת וסוד הכניסה לקדושת היום",
+     "thumbnail": "https://i.ytimg.com/vi/BxcN1-laSpc/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:13:37Z"
+    },
+    {
+     "id": "rpNLl470ryM",
+     "title": "2025-11-08 - כיצד להתכונן בצורה בריאה ליוה_כ תשפ_ו, יום כיפור",
+     "thumbnail": "https://i.ytimg.com/vi/rpNLl470ryM/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:29:01Z"
+    },
+    {
+     "id": "nAF4HC3MTt8",
+     "title": "2024-09-19 - טוב וישר ה זה ראש שנה על כן יורה חטאים בדרך זה עשי'ת עבודת ר'ה לחזור לעצמנו, יום כיפור",
+     "thumbnail": "https://i.ytimg.com/vi/nAF4HC3MTt8/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:32:00Z"
+    }
+   ]
+  },
+  {
    "name": "מ\"ח קניני תורה ועדים תשפ\"ו",
    "playlistId": "PLQYBqyh9idGk",
    "count": 3,
@@ -408,31 +457,6 @@
      "title": "פלפול התלמידים: הדרך לגלות את מרחבי התורה האינסופיים | מ-48 קניני תורה",
      "thumbnail": "https://i.ytimg.com/vi/_Nld2gW_xgE/mqdefault.jpg",
      "publishedAt": "2026-09-13T18:49:53Z"
-    }
-   ]
-  },
-  {
-   "name": "יום הכפורים",
-   "playlistId": "PLTGP14KN23Qg",
-   "count": 3,
-   "videos": [
-    {
-     "id": "xzbZZJlxhqk",
-     "title": "ראש השנה ותשובה — המלכת הבורא והדרך הישרה",
-     "thumbnail": "https://i.ytimg.com/vi/xzbZZJlxhqk/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:12:10Z"
-    },
-    {
-     "id": "0haBqb5MOAc",
-     "title": "תשובה שמחזיקה מעמד — כוחה של קבלה פשוטה בבית היהודי",
-     "thumbnail": "https://i.ytimg.com/vi/0haBqb5MOAc/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:13:09Z"
-    },
-    {
-     "id": "BxcN1-laSpc",
-     "title": "יום כיפור לאור הרמח\"ל: הזאות אחת ואחת וסוד הכניסה לקדושת היום",
-     "thumbnail": "https://i.ytimg.com/vi/BxcN1-laSpc/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:13:37Z"
     }
    ]
   },
@@ -462,6 +486,82 @@
    ]
   },
   {
+   "name": "הכנה לחג השבועות",
+   "playlistId": "PLWjx5j2_Amh8",
+   "count": 2,
+   "videos": [
+    {
+     "id": "oOqf2QvbLVU",
+     "title": "2026-05-19 - צורת הגילוי במעמד הר והעבודה למעשה בקבלת עול מלכות שמים, חג השבועות",
+     "thumbnail": "https://i.ytimg.com/vi/oOqf2QvbLVU/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:28:10Z"
+    },
+    {
+     "id": "iSehYri9e28",
+     "title": "2024-06-18 - יקרת התורה ד- הקב-ה תמה כיצד המתנתם לי, ראש השנה",
+     "thumbnail": "https://i.ytimg.com/vi/iSehYri9e28/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:38:17Z"
+    }
+   ]
+  },
+  {
+   "name": "פורים",
+   "playlistId": "PLYVWe2B_JMww",
+   "count": 2,
+   "videos": [
+    {
+     "id": "bZuAvjG_aCs",
+     "title": "2026-03-19 - שיחה לפורים תשפו",
+     "thumbnail": "https://i.ytimg.com/vi/bZuAvjG_aCs/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:33:22Z"
+    },
+    {
+     "id": "tC1shpzZSj8",
+     "title": "2026-03-19 - עמלק מספק עליך מה שברור לך, פורים",
+     "thumbnail": "https://i.ytimg.com/vi/tC1shpzZSj8/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:33:59Z"
+    }
+   ]
+  },
+  {
+   "name": "תשובה בלי מיתוסים למעיישה ממש",
+   "playlistId": "PLOIrYAHsUtHY",
+   "count": 2,
+   "videos": [
+    {
+     "id": "pxLLvjaOeIc",
+     "title": "2026-08-28 - תשובה בלי מיתוסים ג' להכיר את הכחות שלנו והדרכה מפורטת לחשבון נפש בריא ויעיל, אלול",
+     "thumbnail": "https://i.ytimg.com/vi/pxLLvjaOeIc/mqdefault.jpg",
+     "publishedAt": "2026-09-14T08:35:42Z"
+    },
+    {
+     "id": "KoAha5i1z-g",
+     "title": "2026-08-25 - תשובה והמיתוסים על תשובה א'. האם כל כך מאיים _, אלול",
+     "thumbnail": "https://i.ytimg.com/vi/KoAha5i1z-g/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:26:22Z"
+    }
+   ]
+  },
+  {
+   "name": "ראש  השנה",
+   "playlistId": "PLMjQkCpK_R0w",
+   "count": 2,
+   "videos": [
+    {
+     "id": "-W9h6hYtz_o",
+     "title": "2024-09-19 - ר'ה מלכיות כח הציור - הדין על הבחירה והקשר למלכויות, ראש השנה",
+     "thumbnail": "https://i.ytimg.com/vi/-W9h6hYtz_o/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:35:51Z"
+    },
+    {
+     "id": "2odrxwUipQw",
+     "title": "2026-09-01 - מלכיות בשבילי נברא העולם לפיכך נברא יחידי [אלול תשפ_ו], פסח",
+     "thumbnail": "https://i.ytimg.com/vi/2odrxwUipQw/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:36:30Z"
+    }
+   ]
+  },
+  {
    "name": "דורשי יחודך מילים וניגונים",
    "playlistId": "PLT6wqhYSGWa4",
    "count": 2,
@@ -481,15 +581,28 @@
    ]
   },
   {
-   "name": "תשובה בלי מיתוסים למעיישה ממש",
-   "playlistId": "PLOIrYAHsUtHY",
+   "name": "הכנה לחג הפסח",
+   "playlistId": "PLTllNLXwM4Is",
    "count": 1,
    "videos": [
     {
-     "id": "pxLLvjaOeIc",
-     "title": "2026-08-28 - תשובה בלי מיתוסים ג' להכיר את הכחות שלנו והדרכה מפורטת לחשבון נפש בריא ויעיל, אלול",
-     "thumbnail": "https://i.ytimg.com/vi/pxLLvjaOeIc/mqdefault.jpg",
-     "publishedAt": "2026-09-14T08:35:42Z"
+     "id": "23qsuezbR9A",
+     "title": "2025-03-26 - פסח להתכונן התחדש כיצד",
+     "thumbnail": "https://i.ytimg.com/vi/23qsuezbR9A/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:37:39Z"
+    }
+   ]
+  },
+  {
+   "name": "אלול",
+   "playlistId": "PLYnzLsBich6g",
+   "count": 1,
+   "videos": [
+    {
+     "id": "MUqpJC39wCs",
+     "title": "2025-11-08 - לבנות חומה תשפ_ה, אלול",
+     "thumbnail": "https://i.ytimg.com/vi/MUqpJC39wCs/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:27:23Z"
     }
    ]
   },
