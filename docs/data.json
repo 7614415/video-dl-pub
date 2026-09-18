@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-09-17T08:24:18Z",
+ "generated_at": "2026-09-18T07:59:11Z",
  "channel": {
   "id": "UCyw-wgIrz5zswtMKn7Hyw6A",
   "title": "הרב אבשלום שניידר שליט\"א",
   "customUrl": "@harevavshlomshaniyader",
   "thumbnail": "https://yt3.ggpht.com/SEYIKBQ1ApWXJ3gs2jc2kIOK7vLy4TzzESDi6jwp8-vpD1fZAefgO1QT4yCK3uogFTLwESaGhA=s800-c-k-c0x00ffffff-no-rj",
-  "videoCount": "122"
+  "videoCount": "123"
  },
  "categories": [
   {
@@ -138,7 +138,7 @@
   {
    "name": "בין המיצרים - כללי",
    "playlistId": "PLL8EbH64_OX8",
-   "count": 13,
+   "count": 14,
    "videos": [
     {
      "id": "h0kFQ8rHCeA",
@@ -217,6 +217,12 @@
      "title": "תשעה באב כשלא מרגישים כלום: משל היהלומים בבוץ והקשר לקב\"ה מתוך הריחוק",
      "thumbnail": "https://i.ytimg.com/vi/_g66XYdMwIg/mqdefault.jpg",
      "publishedAt": "2026-09-15T08:32:49Z"
+    },
+    {
+     "id": "kYnwEnM6M4s",
+     "title": "תשעה באב: למה הריחוק מהשם הוא סימן לקרבה הכי גדולה",
+     "thumbnail": "https://i.ytimg.com/vi/kYnwEnM6M4s/mqdefault.jpg",
+     "publishedAt": "2026-09-17T08:24:57Z"
     }
    ]
   },
