@@ -1,11 +1,11 @@
 {
- "generated_at": "2026-09-19T07:49:48Z",
+ "generated_at": "2026-09-20T08:18:35Z",
  "channel": {
   "id": "UCyw-wgIrz5zswtMKn7Hyw6A",
   "title": "הרב אבשלום שניידר שליט\"א",
   "customUrl": "@harevavshlomshaniyader",
   "thumbnail": "https://yt3.ggpht.com/SEYIKBQ1ApWXJ3gs2jc2kIOK7vLy4TzzESDi6jwp8-vpD1fZAefgO1QT4yCK3uogFTLwESaGhA=s800-c-k-c0x00ffffff-no-rj",
-  "videoCount": "138"
+  "videoCount": "148"
  },
  "categories": [
   {
@@ -138,7 +138,7 @@
   {
    "name": "בין המיצרים - כללי",
    "playlistId": "PLL8EbH64_OX8",
-   "count": 16,
+   "count": 18,
    "videos": [
     {
      "id": "h0kFQ8rHCeA",
@@ -226,22 +226,89 @@
     },
     {
      "id": "8ViMW26YaAw",
-     "title": "2026-07-23 - כיצד נבכה ועל מה יש לבכות ליל ט' באב תשפ_ו ביכנ_ס נוף יזרעאל עפולה , תשעה באב",
+     "title": "ליל תשעה באב: יהלומים מתוך הבוץ – גלות הדעת ודמעה אחת של דורנו | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/8ViMW26YaAw/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:01:31Z"
     },
     {
      "id": "5k-TzVPlweA",
-     "title": "2024-07-23 - יז תמוז נבקעו המיצרים ובזה סולקה שכינה מה עבודתנו בימים אלו, ימי בין המצרים",
+     "title": "בין המצרים: פריצת הגבולות וגלות הדעת – עיון בחמשת הדברים של י\"ז בתמוז",
      "thumbnail": "https://i.ytimg.com/vi/5k-TzVPlweA/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:07:16Z"
+    },
+    {
+     "id": "xwL5rosjlHE",
+     "title": "2024-08-13 - בליל זה יבכיון נהי ומספד עצם הלוז של כנס_י עפולה תשפ_ד , תשעה באב",
+     "thumbnail": "https://i.ytimg.com/vi/xwL5rosjlHE/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:51:09Z"
+    },
+    {
+     "id": "mHtVNxaJlLc",
+     "title": "2025-08-01 - הגישה בזמננו לט' באב מחזק ואקטואלי תשפ'ה, תשעה באב",
+     "thumbnail": "https://i.ytimg.com/vi/mHtVNxaJlLc/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:53:55Z"
+    }
+   ]
+  },
+  {
+   "name": "הכנה לחג השבועות",
+   "playlistId": "PLWjx5j2_Amh8",
+   "count": 8,
+   "videos": [
+    {
+     "id": "oOqf2QvbLVU",
+     "title": "העיקר השני - אחדות הבורא וקבלת עול מלכות שמיים | הרב אבשלום שניידר",
+     "thumbnail": "https://i.ytimg.com/vi/oOqf2QvbLVU/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:28:10Z"
+    },
+    {
+     "id": "iSehYri9e28",
+     "title": "לקראת שבועות: התורה כקשר של אהבה והידבקות בקב\"ה | הרב אבשלום שניידר",
+     "thumbnail": "https://i.ytimg.com/vi/iSehYri9e28/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:38:17Z"
+    },
+    {
+     "id": "D8qPqul7jBE",
+     "title": "קניין התלמוד: כוח התשוקה כמנוע לקניין התורה | הרב אבשלום שניידר",
+     "thumbnail": "https://i.ytimg.com/vi/D8qPqul7jBE/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:02:26Z"
+    },
+    {
+     "id": "lkRMsHQdpFM",
+     "title": "2024-06-18 - יקרת התורה א- הכרח התורה לבריאה ולאדם, ראש השנה",
+     "thumbnail": "https://i.ytimg.com/vi/lkRMsHQdpFM/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:03:47Z"
+    },
+    {
+     "id": "l1vwFA81cYA",
+     "title": "שמח בחלקו ברוחניות – איך השמחה במצבי מגבירה את השאיפה בלימוד התורה",
+     "thumbnail": "https://i.ytimg.com/vi/l1vwFA81cYA/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:04:59Z"
+    },
+    {
+     "id": "HkjcYZz0fEk",
+     "title": "אין אהבה כאהבת התורה: למה התורה מחזירה אהבה ואיך זוכים לה",
+     "thumbnail": "https://i.ytimg.com/vi/HkjcYZz0fEk/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:05:31Z"
+    },
+    {
+     "id": "37J_KyPXVnY",
+     "title": "2023-05-30 - הכנה לשבועות כולל לבו חפץ תן חלקנו המיוחד, ראש השנה",
+     "thumbnail": "https://i.ytimg.com/vi/37J_KyPXVnY/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:51:33Z"
+    },
+    {
+     "id": "kGu2xBb6pHg",
+     "title": "2025-06-06 - הכנה למתן תורה תשפ_ה, חג השבועות",
+     "thumbnail": "https://i.ytimg.com/vi/kGu2xBb6pHg/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:52:29Z"
     }
    ]
   },
   {
    "name": "ראש  השנה",
    "playlistId": "PLMjQkCpK_R0w",
-   "count": 7,
+   "count": 8,
    "videos": [
     {
      "id": "-W9h6hYtz_o",
@@ -263,13 +330,13 @@
     },
     {
      "id": "7OFplA_Y4_g",
-     "title": "2024-11-19 - מהות הקבלות באמת קצת ואמתי, ראש השנה",
+     "title": "תשובה מעשית לראש השנה: קבלה ממוקדת לעשרה ימים במקום לשפץ הכל בבת אחת",
      "thumbnail": "https://i.ytimg.com/vi/7OFplA_Y4_g/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:04:24Z"
     },
     {
      "id": "UlMi-Le7D3E",
-     "title": "2026-09-01 - לנשים הכנה לראש השנה להבין ליקר ולהעצים את _שעשני כרצונו_",
+     "title": "שעשני כרצונו: הקבלה האמיתית של האישה לראש השנה | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/UlMi-Le7D3E/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:06:08Z"
     },
@@ -281,9 +348,64 @@
     },
     {
      "id": "FV-QscOGV70",
-     "title": "2024-11-19 - טוב וישר ה ר'ה על כן יורה חטאים בדרך עשי'ת, ראש השנה",
+     "title": "ראש השנה – להמליך את הקב\"ה כאדם הראשון: יסוד הדין והתשובה | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/FV-QscOGV70/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:08:17Z"
+    },
+    {
+     "id": "dX7hWfAMf-I",
+     "title": "2023-09-12 - הכנה לראש השנה עבודת המלכויות למעשה תשפ'ג כולל גבעת המורה עפולה",
+     "thumbnail": "https://i.ytimg.com/vi/dX7hWfAMf-I/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:52:56Z"
+    }
+   ]
+  },
+  {
+   "name": "הכנה לחג הפסח",
+   "playlistId": "PLTllNLXwM4Is",
+   "count": 7,
+   "videos": [
+    {
+     "id": "23qsuezbR9A",
+     "title": "חודש ניסן והתחדשות: יציאה מגלות הדעת והכנות הפסח כעבודה פנימית | הרב אבשלום שניידר",
+     "thumbnail": "https://i.ytimg.com/vi/23qsuezbR9A/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:37:39Z"
+    },
+    {
+     "id": "mRcMJ5U4KbI",
+     "title": "2024-05-02 - ועד פסח תשפד חידוש הסבא מקלם בציווי לראות את עצמו",
+     "thumbnail": "https://i.ytimg.com/vi/mRcMJ5U4KbI/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:00:40Z"
+    },
+    {
+     "id": "6Q62-SE7AJE",
+     "title": "החודש הזה לכם: לצאת משלטון הטבע אל הזמן שלנו | הכנה לחודש ניסן ולפסח",
+     "thumbnail": "https://i.ytimg.com/vi/6Q62-SE7AJE/mqdefault.jpg",
+     "publishedAt": "2026-09-18T08:07:42Z"
+    },
+    {
+     "id": "s2iSYSAq9cQ",
+     "title": "2024-05-02 - ועד פסח תשפד כיצד יכול לראות את עצמו",
+     "thumbnail": "https://i.ytimg.com/vi/s2iSYSAq9cQ/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:50:22Z"
+    },
+    {
+     "id": "VYs9fwnNPsg",
+     "title": "2025-11-08 - הכנה לפסח תשפ_ה",
+     "thumbnail": "https://i.ytimg.com/vi/VYs9fwnNPsg/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:52:00Z"
+    },
+    {
+     "id": "CPl2fleoFw8",
+     "title": "2023-05-28 - הכנה לליל הסדר חלק ב'  ג' שלבים בליל הסדר",
+     "thumbnail": "https://i.ytimg.com/vi/CPl2fleoFw8/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:53:27Z"
+    },
+    {
+     "id": "v-zF8K1V0r4",
+     "title": "2023-05-28 - הכנה לפסח סדר הקערה חלק א'",
+     "thumbnail": "https://i.ytimg.com/vi/v-zF8K1V0r4/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:55:23Z"
     }
    ]
   },
@@ -333,49 +455,6 @@
      "title": "פרשת המן: לחיות את הרגע — אמונה וביטחון בהשגחה המתחדשת בכל יום",
      "thumbnail": "https://i.ytimg.com/vi/Du0ykiPRPYs/mqdefault.jpg",
      "publishedAt": "2026-09-09T10:10:35Z"
-    }
-   ]
-  },
-  {
-   "name": "הכנה לחג השבועות",
-   "playlistId": "PLWjx5j2_Amh8",
-   "count": 6,
-   "videos": [
-    {
-     "id": "oOqf2QvbLVU",
-     "title": "העיקר השני - אחדות הבורא וקבלת עול מלכות שמיים | הרב אבשלום שניידר",
-     "thumbnail": "https://i.ytimg.com/vi/oOqf2QvbLVU/mqdefault.jpg",
-     "publishedAt": "2026-09-15T08:28:10Z"
-    },
-    {
-     "id": "iSehYri9e28",
-     "title": "לקראת שבועות: התורה כקשר של אהבה והידבקות בקב\"ה | הרב אבשלום שניידר",
-     "thumbnail": "https://i.ytimg.com/vi/iSehYri9e28/mqdefault.jpg",
-     "publishedAt": "2026-09-15T08:38:17Z"
-    },
-    {
-     "id": "D8qPqul7jBE",
-     "title": "2026-05-02 - כעבד ישאף צל בנית התשוקה כולל אברמוב עפולה תשפו, ספירת העומר",
-     "thumbnail": "https://i.ytimg.com/vi/D8qPqul7jBE/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:02:26Z"
-    },
-    {
-     "id": "lkRMsHQdpFM",
-     "title": "2024-06-18 - יקרת התורה א- הכרח התורה לבריאה ולאדם, ראש השנה",
-     "thumbnail": "https://i.ytimg.com/vi/lkRMsHQdpFM/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:03:47Z"
-    },
-    {
-     "id": "l1vwFA81cYA",
-     "title": "2024-06-18 - יקרת התורה ג- שמח בחלקו עם שאיפה לגדלות, ראש השנה",
-     "thumbnail": "https://i.ytimg.com/vi/l1vwFA81cYA/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:04:59Z"
-    },
-    {
-     "id": "HkjcYZz0fEk",
-     "title": "2024-06-18 - יקרת התורה ב- ללמוד לשם אהבת התורה נצי-ב, ראש השנה",
-     "thumbnail": "https://i.ytimg.com/vi/HkjcYZz0fEk/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:05:31Z"
     }
    ]
   },
@@ -466,6 +545,49 @@
    ]
   },
   {
+   "name": "יום הכפורים",
+   "playlistId": "PLTGP14KN23Qg",
+   "count": 6,
+   "videos": [
+    {
+     "id": "xzbZZJlxhqk",
+     "title": "ראש השנה ותשובה — המלכת הבורא והדרך הישרה",
+     "thumbnail": "https://i.ytimg.com/vi/xzbZZJlxhqk/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:12:10Z"
+    },
+    {
+     "id": "0haBqb5MOAc",
+     "title": "תשובה שמחזיקה מעמד — כוחה של קבלה פשוטה בבית היהודי",
+     "thumbnail": "https://i.ytimg.com/vi/0haBqb5MOAc/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:13:09Z"
+    },
+    {
+     "id": "BxcN1-laSpc",
+     "title": "יום כיפור לאור הרמח\"ל: הזאות אחת ואחת וסוד הכניסה לקדושת היום",
+     "thumbnail": "https://i.ytimg.com/vi/BxcN1-laSpc/mqdefault.jpg",
+     "publishedAt": "2026-09-10T07:13:37Z"
+    },
+    {
+     "id": "rpNLl470ryM",
+     "title": "תשובה ווידוי ביום כיפור: להמליך את הקב\"ה ולמסור את עצמנו בידיו | הרב אבשלום שניידר",
+     "thumbnail": "https://i.ytimg.com/vi/rpNLl470ryM/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:29:01Z"
+    },
+    {
+     "id": "nAF4HC3MTt8",
+     "title": "טוב וישר ה' - ראש השנה ועשרת ימי תשובה: להמליך את הקב\"ה כאדם הראשון",
+     "thumbnail": "https://i.ytimg.com/vi/nAF4HC3MTt8/mqdefault.jpg",
+     "publishedAt": "2026-09-15T08:32:00Z"
+    },
+    {
+     "id": "ZYh-FUSEPno",
+     "title": "2023-05-30 - הכנה ליום כפורים תשובה - דרשה לנשים מחזקת ומעצימה, יום כיפור",
+     "thumbnail": "https://i.ytimg.com/vi/ZYh-FUSEPno/mqdefault.jpg",
+     "publishedAt": "2026-09-19T07:54:46Z"
+    }
+   ]
+  },
+  {
    "name": "לשם שבו ואחלמה-הקדמות ושערים שער א'",
    "playlistId": "PLH9Ujk9YIO4A",
    "count": 6,
@@ -509,43 +631,6 @@
    ]
   },
   {
-   "name": "יום הכפורים",
-   "playlistId": "PLTGP14KN23Qg",
-   "count": 5,
-   "videos": [
-    {
-     "id": "xzbZZJlxhqk",
-     "title": "ראש השנה ותשובה — המלכת הבורא והדרך הישרה",
-     "thumbnail": "https://i.ytimg.com/vi/xzbZZJlxhqk/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:12:10Z"
-    },
-    {
-     "id": "0haBqb5MOAc",
-     "title": "תשובה שמחזיקה מעמד — כוחה של קבלה פשוטה בבית היהודי",
-     "thumbnail": "https://i.ytimg.com/vi/0haBqb5MOAc/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:13:09Z"
-    },
-    {
-     "id": "BxcN1-laSpc",
-     "title": "יום כיפור לאור הרמח\"ל: הזאות אחת ואחת וסוד הכניסה לקדושת היום",
-     "thumbnail": "https://i.ytimg.com/vi/BxcN1-laSpc/mqdefault.jpg",
-     "publishedAt": "2026-09-10T07:13:37Z"
-    },
-    {
-     "id": "rpNLl470ryM",
-     "title": "תשובה ווידוי ביום כיפור: להמליך את הקב\"ה ולמסור את עצמנו בידיו | הרב אבשלום שניידר",
-     "thumbnail": "https://i.ytimg.com/vi/rpNLl470ryM/mqdefault.jpg",
-     "publishedAt": "2026-09-15T08:29:01Z"
-    },
-    {
-     "id": "nAF4HC3MTt8",
-     "title": "טוב וישר ה' - ראש השנה ועשרת ימי תשובה: להמליך את הקב\"ה כאדם הראשון",
-     "thumbnail": "https://i.ytimg.com/vi/nAF4HC3MTt8/mqdefault.jpg",
-     "publishedAt": "2026-09-15T08:32:00Z"
-    }
-   ]
-  },
-  {
    "name": "פורים",
    "playlistId": "PLYVWe2B_JMww",
    "count": 4,
@@ -564,40 +649,15 @@
     },
     {
      "id": "Uszq0KO2BfM",
-     "title": "2025-03-11 - לפגוש את הקב_ה, פורים",
+     "title": "פורים והנהגת הייחוד: לפגוש את הקדוש ברוך הוא בתוך החושך | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/Uszq0KO2BfM/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:02:00Z"
     },
     {
      "id": "1hHZFYhVMhE",
-     "title": "2026-02-23 - כיצד נלחם עמלק נגד השמחה פורים תשפו",
+     "title": "שמחת פורים ומלחמת עמלק: הקב\"ה אוהב אותנו בכל מצב | הרב אבשלום שניידר",
      "thumbnail": "https://i.ytimg.com/vi/1hHZFYhVMhE/mqdefault.jpg",
      "publishedAt": "2026-09-18T08:03:09Z"
-    }
-   ]
-  },
-  {
-   "name": "הכנה לחג הפסח",
-   "playlistId": "PLTllNLXwM4Is",
-   "count": 3,
-   "videos": [
-    {
-     "id": "23qsuezbR9A",
-     "title": "חודש ניסן והתחדשות: יציאה מגלות הדעת והכנות הפסח כעבודה פנימית | הרב אבשלום שניידר",
-     "thumbnail": "https://i.ytimg.com/vi/23qsuezbR9A/mqdefault.jpg",
-     "publishedAt": "2026-09-15T08:37:39Z"
-    },
-    {
-     "id": "mRcMJ5U4KbI",
-     "title": "2024-05-02 - ועד פסח תשפד חידוש הסבא מקלם בציווי לראות את עצמו",
-     "thumbnail": "https://i.ytimg.com/vi/mRcMJ5U4KbI/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:00:40Z"
-    },
-    {
-     "id": "6Q62-SE7AJE",
-     "title": "2026-03-19 - הכנה לפסח החודשהזה לכם תשפו",
-     "thumbnail": "https://i.ytimg.com/vi/6Q62-SE7AJE/mqdefault.jpg",
-     "publishedAt": "2026-09-18T08:07:42Z"
     }
    ]
   },
