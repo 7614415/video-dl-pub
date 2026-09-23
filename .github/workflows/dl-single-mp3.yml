@@ -18,8 +18,10 @@ jobs:
     steps:
       - name: Install tools
         run: |
-          pip install -q yt-dlp
+          pip install -q -U yt-dlp
           sudo apt-get update && sudo apt-get install -y ffmpeg
+          # bgutil PO token provider
+          pip install -q bgutil-ytdlp-pot-provider || true
 
       - name: Install and connect WARP
         run: |
@@ -44,11 +46,11 @@ jobs:
         run: |
           mkdir -p out
           set +e
-          for CLIENT in web_safari web mweb tv android_vr ios; do
+          COMMON_ARGS="--proxy socks5://127.0.0.1:1080 --js-runtimes deno:$(which deno) --remote-components ejs:github"
+          for CLIENT in web_safari mweb web tv_simply tv_embedded tv android_vr ios; do
             echo "=== try client=$CLIENT ==="
-            rm -f out/*.mp3 out/*.webp out/*.jpg out/*.part
-            yt-dlp --proxy socks5://127.0.0.1:1080 \
-              --js-runtimes "deno:$(which deno)" \
+            rm -f out/*.mp3 out/*.webp out/*.jpg out/*.part out/*.m4a out/*.opus out/*.webm
+            yt-dlp $COMMON_ARGS \
               --extractor-args "youtube:player_client=$CLIENT" \
               -x --audio-format mp3 --audio-quality "${BR}K" \
               --embed-metadata \
