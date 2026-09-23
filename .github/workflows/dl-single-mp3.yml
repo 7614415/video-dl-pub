@@ -1,0 +1,58 @@
+name: Download single YouTube video as MP3 (artifact)
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_id:
+        description: 'YouTube video ID (11 chars)'
+        required: true
+      bitrate:
+        description: 'MP3 bitrate (e.g. 128, 192, 320)'
+        required: false
+        default: '192'
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install tools
+        run: |
+          pip install -q yt-dlp
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install and connect WARP
+        run: |
+          curl https://pkg.cloudflareclient.com/pubkey.gpg | sudo gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/cloudflare-client.list
+          sudo apt-get update && sudo apt-get install -y cloudflare-warp
+          sudo warp-cli --accept-tos registration new || true
+          sudo warp-cli --accept-tos mode proxy
+          sudo warp-cli --accept-tos proxy port 1080
+          sudo warp-cli --accept-tos connect
+          sleep 8
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+
+      - name: Download as MP3
+        env:
+          VID: ${{ inputs.video_id }}
+          BR: ${{ inputs.bitrate }}
+        run: |
+          mkdir -p out
+          yt-dlp --proxy socks5://127.0.0.1:1080 \
+            -x --audio-format mp3 --audio-quality "${BR}K" \
+            --embed-metadata --embed-thumbnail \
+            -o "out/%(title)s.%(ext)s" \
+            "https://www.youtube.com/watch?v=${VID}"
+          ls -la out/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-mp3
+          path: out/*.mp3
+          retention-days: 3
