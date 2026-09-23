@@ -33,22 +33,34 @@ jobs:
           sleep 8
 
       - name: Install Deno
-        uses: denoland/setup-deno@v1
+        uses: denoland/setup-deno@v2
         with:
-          deno-version: v1.x
+          deno-version: v2.x
 
-      - name: Download as MP3
+      - name: Download as MP3 (try multiple clients)
         env:
           VID: ${{ inputs.video_id }}
           BR: ${{ inputs.bitrate }}
         run: |
           mkdir -p out
-          yt-dlp --proxy socks5://127.0.0.1:1080 \
-            -x --audio-format mp3 --audio-quality "${BR}K" \
-            --embed-metadata --embed-thumbnail \
-            -o "out/%(title)s.%(ext)s" \
-            "https://www.youtube.com/watch?v=${VID}"
+          set +e
+          for CLIENT in web_safari web mweb tv android_vr ios; do
+            echo "=== try client=$CLIENT ==="
+            rm -f out/*.mp3 out/*.webp out/*.jpg out/*.part
+            yt-dlp --proxy socks5://127.0.0.1:1080 \
+              --js-runtimes "deno:$(which deno)" \
+              --extractor-args "youtube:player_client=$CLIENT" \
+              -x --audio-format mp3 --audio-quality "${BR}K" \
+              --embed-metadata \
+              -o "out/%(title)s.%(ext)s" \
+              "https://www.youtube.com/watch?v=${VID}"
+            if ls out/*.mp3 >/dev/null 2>&1; then
+              echo "=== SUCCESS with client=$CLIENT ==="
+              break
+            fi
+          done
           ls -la out/
+          if ! ls out/*.mp3 >/dev/null 2>&1; then exit 1; fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
