@@ -1,0 +1,29 @@
+name: relay
+run-name: ${{ inputs.job }}
+# ממסר שידור חי לשלוחה 5 (09/11/2026): ffmpeg על זרם חי, חלקי wav של 10 שניות נדחפים לענף out/<job> ברגע שהם מוכנים.
+# מת לבד אם דופק הלב hb/<job> לא מתעדכן 90 שניות. הענפים נמחקים בסוף.
+on:
+  workflow_dispatch:
+    inputs:
+      job: { description: 'job id (branch in/<job>)', required: true, type: string }
+permissions:
+  contents: write
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 36
+    env:
+      FARM: ${{ github.workspace }}
+      SHARD: '0'
+      SHARDS: '1'
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { ref: 'in/${{ inputs.job }}', path: injob }
+      - uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+      - run: python3 runner/stage.py part injob /tmp/w
+      - if: ${{ always() }}
+        run: git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "refs/heads/in/${{ inputs.job }}" "refs/heads/out/${{ inputs.job }}" "refs/heads/hb/${{ inputs.job }}" || true
