@@ -1,0 +1,1 @@
+{"cmd": "command -v ffmpeg >/dev/null || { sudo apt-get update -q >/dev/null 2>&1; sudo apt-get install -y -q ffmpeg >/dev/null 2>&1; }; python3 relay_remote.py tv-233301-d3be 10 1740", "merge": "", "workers": 1}
